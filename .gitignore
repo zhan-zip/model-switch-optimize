@@ -13,3 +13,6 @@ data/auth/*
 data/faults/*
 data/events/*
 !data/**/.gitkeep
+
+# 本地敏感文件（含真实 key，绝不入库）
+docs/testmodel.md

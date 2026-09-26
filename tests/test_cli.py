@@ -75,5 +75,55 @@ def test_validate_missing_config(workspace, capsys):
 
 
 def test_pending_command_exit_code(workspace, capsys):
-    assert main(["tools"]) == 2
+    assert main(["history"]) == 2
     assert "后续" in capsys.readouterr().out
+
+
+# -- tools 命令（阶段2） -----------------------------------------------
+
+
+def test_tools_lists_models(workspace, capsys):
+    main(["init"])
+    assert main(["tools"]) == 0
+    out = capsys.readouterr().out
+    assert "模型清单" in out
+    assert "provider-a/default/gpt-4o" in out
+    assert "未测" in out
+
+
+def test_tools_json(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    assert main(["tools", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert len(payload["models"]) == 4
+
+
+def test_tools_check_mock_all_ok(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    assert main(["tools", "--check", "--mock", "--model", "provider-a/default/gpt-4o"]) == 0
+    out = capsys.readouterr().out
+    assert "✓ provider-a/default/gpt-4o" in out
+
+
+def test_tools_check_mock_failure_exit_code(workspace, capsys):
+    (workspace / "config").mkdir(parents=True)
+    (workspace / "config" / "models.yaml").write_text(
+        "providers:\n"
+        "  - name: a\n"
+        "    base_url: https://a.example.com/v1\n"
+        "    groups:\n"
+        "      - { name: g, key_env: KEY_A, models: [m1] }\n"
+        "fallback: { provider: a, group: g, model: m1, key_env: KEY_A }\n",
+        encoding="utf-8",
+    )
+    assert main(["tools", "--check", "--mock", "--model", "a/g/m99"]) == 1
+    out = capsys.readouterr().out
+    assert "未知模型" in out
+
+
+def test_tools_missing_config(workspace, capsys):
+    assert main(["tools"]) == 1
+    assert "加载失败" in capsys.readouterr().out
