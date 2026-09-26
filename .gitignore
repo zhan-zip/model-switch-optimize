@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+.venv/
+
+# 运行期产物（mso init 生成，不入库）
+config/models.yaml
+config/model_prefs.md
+data/auth/*
+data/faults/*
+data/events/*
+!data/**/.gitkeep
