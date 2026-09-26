@@ -14,5 +14,5 @@ data/faults/*
 data/events/*
 !data/**/.gitkeep
 
-# 本地敏感文件（含真实 key，绝不入库）
-docs/testmodel.md
+# docs/ 与本地敏感资料整体不入库（设计文档 / 测试记录 / 交接文档 / 真实 key 资料）
+docs/
