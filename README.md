@@ -41,8 +41,20 @@ pytest            # 运行测试（先安装 dev 依赖：pip install -e ".[dev]
 | 2 | 工具层与 mock：model / client / health / tools / mocker | ✅ |
 | 3 | 决策中枢：manager 三决策点 + onboarding(init-check) | ⬜ |
 | 4 | 故障自愈闭环：切换 / 诊断四项 / 人工门禁修复 / 规则库 / 机械兜底 | ⬜ |
-| 5 | 周期探测 + 完整 CLI(run/diagnose/probe/history/auth) + 嵌入接口 | ⬜ |
+| 5 | 周期探测 + 完整 CLI(run/diagnose/probe/history/auth) + 嵌入接口（mso run --json / Python 库）+ MCP 薄封装 | ⬜ |
 | 6 | 测试收尾 / Web 演示 / 软著材料 | ⬜ |
+
+## 嵌入与对接（规划）
+
+| 宿主形态 | 对接方式 |
+|---|---|
+| 任意语言程序 | CLI 子进程 `mso run --json "任务"`，解析 JSON 事件流 |
+| Python 项目 | `from model_switch import ModelSwitcher` |
+| agent 项目（托管） | agent 工具列表加"执行任务"工具，模块全权代理选型/切换 |
+| agent 项目（自决策） | 六工具（TOOL_SPECS）注册进 function calling，统一入口 `dispatch(name, args)` |
+| MCP 宿主 | MCP 薄封装（阶段5），零代码接入 |
+
+高危操作走人工确认协议（`confirm_requested` → 宿主转发用户 → `confirm_granted/denied`）。
 
 ## 运行条件
 
