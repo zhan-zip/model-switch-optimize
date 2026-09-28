@@ -22,3 +22,6 @@ mso = "model_switch.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["model_switch*"]
+
+[tool.setuptools.package-data]
+model_switch = ["rules/*.md"]

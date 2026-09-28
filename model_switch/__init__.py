@@ -22,6 +22,15 @@
 - websearch   DuckDuckGo 简版联网搜索（保底）
 - cli         mso tools · mso init-check
 
-阶段4~6 见 README 开发阶段表（故障自愈闭环 / 探测与完整 CLI / 收尾与软著材料）。
+阶段4（故障自愈闭环）：
+- pipeline    run 闭环（选型 -> 调用 -> 故障切换 -> 机械兜底 -> 入档）
+- diagnose    诊断编排（四项事实 -> 规则库 -> 结论）
+- fix         apply_fix 人工门禁修复（确认 -> 执行 -> 重测 -> 恢复）
+- console_ops 控制台操作契约（Playwright MCP 占位）
+- history     故障写入侧（fault-<序号>.json 脱敏落盘）
+- rules       内置规则库（rules/diagnose.md）
+- cli         mso run · mso diagnose · mso history
+
+阶段5~6 见 README 开发阶段表（周期探测 / 嵌入接口与 MCP / 收尾与软著材料）。
 """
 __version__ = "1.0.0"
