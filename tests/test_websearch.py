@@ -1,17 +1,15 @@
-"""websearch 模块测试：DuckDuckGo 简版解析与错误分类（注入假 opener）。"""
+"""websearch 模块测试：Bing HTML 解析与错误分类（注入假 opener）。"""
 import urllib.error
 
 from model_switch.websearch import default_web_search
 
 FAKE_HTML = """
-<div class="links_main results links">
-<a rel="nofollow" class="result__a"
-   href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa&amp;rut=abc">GPT-4o &amp; 跑分评测</a>
-<a class="result__snippet" href="//duckduckgo.com/l/?uddg=x">延迟 <b>1200ms</b>&#x27;性价比高&#x27;</a>
-<a rel="nofollow" class="result__a"
-   href="https://plain.example.com/b">直接链接标题</a>
-<a class="result__snippet" href="#">第二条摘要</a>
-</div>
+<ol id="b_results">
+<li class="b_algo"><h2><a href="https://example.com/a">GPT-4o &amp; 跑分评测</a></h2>
+<div class="b_caption"><p>延迟 <b>1200ms</b>&#x27;性价比高&#x27;</p></div></li>
+<li class="b_algo"><h2><a href="//cn.bing.com/ck/a?u=aHR0cHM6Ly9wbGFpbi5leGFtcGxlLmNvbS9i">直接链接标题</a></h2>
+<div class="b_caption"><p>第二条摘要</p></div></li>
+</ol>
 """
 
 
@@ -35,7 +33,7 @@ def _opener_with(html):
     return opener
 
 
-def test_parse_results_decodes_uddg_and_entities():
+def test_parse_results_bing_and_decodes_redirect():
     result = default_web_search("gpt-4o 跑分", opener=_opener_with(FAKE_HTML))
     assert result["ok"] is True
     items = result["results"]
@@ -43,6 +41,7 @@ def test_parse_results_decodes_uddg_and_entities():
     assert items[0]["title"] == "GPT-4o & 跑分评测"
     assert "1200ms" in items[0]["snippet"] and "性价比高" in items[0]["snippet"]
     assert "<b>" not in items[0]["snippet"]
+    # Bing /ck/a 重定向 u=<base64> 解码回真实 URL
     assert items[1]["url"] == "https://plain.example.com/b"
 
 
