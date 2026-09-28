@@ -19,7 +19,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except ImportError:
+    from mcp import FastMCP
 
 from .client import ErrorClass  # noqa: F401  文档引用
 from .config import DEFAULT_CONFIG_PATH

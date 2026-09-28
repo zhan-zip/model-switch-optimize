@@ -52,7 +52,7 @@ pytest            # 运行测试（先安装 dev 依赖：pip install -e ".[dev]
 | 2 | 工具层与 mock：model / client / health / tools / mocker | ✅ |
 | 3 | 决策中枢：manager 三决策点 + onboarding(init-check) + 联网搜索 | ✅ |
 | 4 | 故障自愈闭环：切换 / 诊断四项 / 人工门禁修复 / 规则库 / 机械兜底 | ✅ |
-| 5 | 周期探测 + CLI 收尾(probe/auth) + 嵌入接口（mso run --json / Python 库）+ MCP 薄封装 | ✅ |
+| 5 | 周期探测 + CLI 收尾(probe/auth) + 嵌入接口（mso run --json / Python 库）+ MCP 薄封装 | ✅ (MCP 已锁定 <2.0) |
 | 6 | 测试收尾 / Web 演示 / 软著材料 | ⬜ |
 
 ## 嵌入与对接（规划）
