@@ -75,7 +75,7 @@ def test_validate_missing_config(workspace, capsys):
 
 
 def test_pending_command_exit_code(workspace, capsys):
-    assert main(["history"]) == 2
+    assert main(["probe"]) == 2
     assert "后续" in capsys.readouterr().out
 
 
@@ -167,3 +167,105 @@ def test_init_check_mock_per_group(workspace, capsys, monkeypatch):
 def test_init_check_missing_config(workspace, capsys):
     assert main(["init-check", "--mock"]) == 1
     assert "加载失败" in capsys.readouterr().out
+
+
+# -- run / diagnose / history 命令（阶段4） ----------------------------------
+
+
+def test_run_mock_switch_flow(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    assert main(["run", "写个爬虫", "--mock"]) == 0
+    out = capsys.readouterr().out
+    assert "故障切换后完成" in out  # mock：选型第一个 -> 401 -> 切保底 -> 成功
+    assert "最终模型" in out
+    assert "尝试 2 次" in out
+    assert "事件流已落盘" in out
+
+
+def test_run_mock_json_event_stream(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    assert main(["run", "写个爬虫", "--mock", "--json"]) == 0
+    events = json.loads(capsys.readouterr().out)
+    types = [e["type"] for e in events]
+    assert "pipeline_started" in types
+    assert "model_failed" in types
+    assert "switch_triggered" in types
+    assert "switched_to" in types
+    assert "fault_recorded" in types
+    assert types[-1] == "pipeline_finished"
+    assert types[0] == "pipeline_started"
+
+
+def test_run_mock_with_diagnose(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    assert main(["run", "写个爬虫", "--mock", "--diagnose"]) == 0
+    out = capsys.readouterr().out
+    assert "诊断（provider-a）" in out
+    assert "结论" in out
+    assert "充值" in out  # mock 诊断建议动作
+
+
+def test_run_missing_config(workspace, capsys):
+    assert main(["run", "任务", "--mock"]) == 1
+    assert "加载失败" in capsys.readouterr().out
+
+
+def test_diagnose_mock(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    assert main(["diagnose", "provider-a", "--mock"]) == 0
+    out = capsys.readouterr().out
+    assert "诊断（provider-a）" in out
+    for name in ("reachable", "balance", "group", "connectivity"):
+        assert name in out
+    assert "结论" in out
+    assert "建议" in out
+
+
+def test_diagnose_real_without_console(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    assert main(["diagnose", "provider-a"]) == 1  # 真实模式未注入控制台 -> 未完成
+    out = capsys.readouterr().out
+    assert "console_not_configured" in out
+    assert "--mock" in out
+
+
+def test_diagnose_missing_config(workspace, capsys):
+    assert main(["diagnose", "x", "--mock"]) == 1
+    assert "加载失败" in capsys.readouterr().out
+
+
+def test_history_empty(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    assert main(["history"]) == 0
+    assert "暂无故障历史" in capsys.readouterr().out
+
+
+def test_history_after_run_fault(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    assert main(["run", "写个爬虫", "--mock"]) == 0  # 产生一条故障记录
+    capsys.readouterr()
+    assert main(["history"]) == 0
+    out = capsys.readouterr().out
+    assert "故障历史（1 条）" in out
+    assert "provider-a/default/gpt-4o" in out
+    assert "[401]" in out
+    assert "写个爬虫" in out
+
+
+def test_history_json(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    assert main(["run", "任务", "--mock"]) == 0
+    capsys.readouterr()
+    assert main(["history", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["count"] == 1
+    assert payload["faults"][0]["error_class"] == "401"

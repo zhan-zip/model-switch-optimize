@@ -1,9 +1,10 @@
 """CLI 入口：mso <command>。
 
 已实现：init（生成配置模板）· validate（校验配置）· tools（模型清单与状态）
-· init-check（初始化 onboarding：连通+跑分+画像+标签）。
-其余命令（run / diagnose / probe / history / auth）
-已注册占位，将在后续开发阶段实现。
+· init-check（初始化 onboarding：连通+跑分+画像+标签）
+· run（完整闭环：选型->调用->故障切换->机械兜底，可选自动诊断）
+· diagnose（手动诊断：四项检查->结论）· history（故障历史）。
+其余命令（probe / auth）已注册占位，将在后续开发阶段实现。
 """
 from __future__ import annotations
 
@@ -20,20 +21,20 @@ from .config import (
     load_config,
     validate_config,
 )
-from .events import EventStream
-from .mocker import MockConsole, MockModelClient, MockWebSearch
+from .diagnose import run_diagnose
+from .events import EventStream, EventType
+from .manager import DecisionError
+from .mocker import MockConsole, MockDecisionClient, MockModelClient, MockWebSearch
 from .model import ModelRegistry
 from .onboarding import run_onboarding
+from .pipeline import OUTCOME_FALLBACK, OUTCOME_OK, OUTCOME_SWITCHED, Pipeline
 from .tools import Toolbox
 from .websearch import default_web_search
 
 DATA_DIRS = ("data/auth", "data/faults", "data/events")
 
 _PENDING_COMMANDS: dict[str, str] = {
-    "run": "完整闭环处理任务（默认人读 / --json 事件流）",
-    "diagnose": "手动触发诊断",
     "probe": "手动探测恢复",
-    "history": "查看故障历史",
     "auth": "管理控制台账号",
 }
 
@@ -64,6 +65,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_ic.add_argument("--per-group", action="store_true", help="连通测试只测每分组代表模型（默认全量）")
     p_ic.add_argument("--mock", action="store_true", help="使用 mock（无真实 key 也能演示）")
     p_ic.add_argument("--json", action="store_true", help="输出 JSON 事件流（跳过终端确认，标签不落盘）")
+
+    p_run = sub.add_parser("run", help="完整闭环处理任务（选型->调用->故障切换->机械兜底）")
+    p_run.add_argument("task", help="任务文本")
+    p_run.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
+    p_run.add_argument("--mock", action="store_true", help="使用 mock（无真实 key 演示故障切换闭环）")
+    p_run.add_argument("--json", action="store_true", help="输出 JSON 事件流")
+    p_run.add_argument("--diagnose", action="store_true", help="故障后自动诊断相关服务商（四项检查->结论）")
+    p_run.add_argument("--confirm", default="never", choices=["never", "once", "always"], help="选型人工确认策略")
+
+    p_diag = sub.add_parser("diagnose", help="手动诊断服务商（四项检查->结论）")
+    p_diag.add_argument("provider", help="服务商名称")
+    p_diag.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
+    p_diag.add_argument("--mock", action="store_true", help="使用 mock（演示四项事实与结论）")
+    p_diag.add_argument("--json", action="store_true", help="输出 JSON 事件流")
+
+    p_hist = sub.add_parser("history", help="查看故障历史（data/faults/）")
+    p_hist.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
+    p_hist.add_argument("--json", action="store_true", help="输出 JSON 结果")
 
     for name, help_text in _PENDING_COMMANDS.items():
         sub.add_parser(name, help=f"{help_text}（后续阶段实现）")
@@ -216,6 +235,157 @@ def _print_line(as_json: bool, payload: dict[str, Any]) -> None:
             print(err)
 
 
+# -- run / diagnose / history（阶段4） -------------------------------------
+
+
+def _pipeline_toolbox(args: argparse.Namespace, stream: EventStream) -> Toolbox:
+    """run / diagnose 共用：mock 决策演示（选型->故障->切换）或真实工具箱。"""
+
+    config = load_config(args.config)
+    registry = ModelRegistry(config)
+    if args.mock:
+        first = registry.all()[0]
+        fallback = str(config.fallback_ref())
+        client = MockDecisionClient(
+            default_model=str(first.ref),
+            switch_to=fallback,
+            fail_models={first.ref.model: "401"},
+        )
+        return Toolbox(
+            config, registry, stream,
+            model_client=client,
+            console=MockConsole(),
+            web_search_impl=MockWebSearch().search,
+            mock=True,
+        )
+    return Toolbox(config, registry, stream, web_search_impl=default_web_search)
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    try:
+        stream = EventStream(persist_dir=Path("data/events"))
+        toolbox = _pipeline_toolbox(args, stream)
+    except ConfigError as exc:
+        _print_line(args.json, {"ok": False, "errors": [f"加载失败：{exc}"]})
+        return 1
+
+    pipeline = Pipeline(toolbox, confirm_mode=args.confirm)
+    result = pipeline.run(args.task)
+
+    diagnosis: list[dict[str, Any]] = []
+    if args.diagnose:
+        fault_providers = sorted(
+            {
+                event.data["model_ref"].split("/")[0]
+                for event in stream
+                if event.type == EventType.FAULT_RECORDED
+            }
+        )
+        for provider in fault_providers:
+            try:
+                diagnosis.append(run_diagnose(toolbox, provider))
+            except DecisionError as exc:
+                diagnosis.append(
+                    {"ok": False, "status": "decision_failed", "provider": provider, "detail": str(exc)}
+                )
+
+    if args.json:
+        print(stream.to_json())
+        return 0 if result.ok else 1
+
+    titles = {
+        OUTCOME_OK: "一次成功",
+        OUTCOME_SWITCHED: "故障切换后完成（任务不中断）",
+        OUTCOME_FALLBACK: "机械兜底完成",
+    }
+    if result.ok:
+        print(f"任务结果：✓ {titles[result.outcome]}")
+        print(f"  最终模型：{result.model_ref}")
+        print(f"  尝试 {result.attempts} 次 · 切换 {result.switches} 次")
+        print("  最终回复：")
+        print(f"    {result.text.strip()[:500]}")
+    else:
+        print(f"任务结果：✗ 全部模型不可用（最后错误 [{result.error_class}]）")
+        print(f"  尝试 {result.attempts} 次 · 切换 {result.switches} 次 · 故障已入档 data/faults/")
+
+    for diag in diagnosis:
+        print(f"── 诊断（{diag.get('provider')}）──")
+        if diag.get("ok"):
+            print(f"  结论：{diag['conclusion']}")
+            print(f"  建议：{' · '.join(diag['actions'])}")
+        else:
+            print(f"  未完成（{diag.get('status')}）：{diag.get('detail', '')}")
+
+    print(f"（事件流已落盘 data/events/{stream.trace_id}.jsonl）")
+    return 0 if result.ok else 1
+
+
+def cmd_diagnose(args: argparse.Namespace) -> int:
+    try:
+        stream = EventStream(persist_dir=Path("data/events"))
+        toolbox = _pipeline_toolbox(args, stream)
+    except ConfigError as exc:
+        _print_line(args.json, {"ok": False, "errors": [f"加载失败：{exc}"]})
+        return 1
+
+    try:
+        result = run_diagnose(toolbox, args.provider)
+    except DecisionError as exc:
+        if args.json:
+            print(stream.to_json())
+        else:
+            print(f"诊断失败（决策模型全部不可用）：{exc}")
+        return 1
+
+    if args.json:
+        print(stream.to_json())
+        return 0 if result.get("ok") else 1
+
+    if not result.get("ok"):
+        print(f"诊断未完成（{result.get('status')}）：{result.get('detail', '')}")
+        if result.get("status") == "console_not_configured":
+            print("  真实诊断依赖外部 Playwright MCP 控制台实现；演示可加 --mock")
+        return 1
+
+    print(f"诊断（{args.provider}）：")
+    for name, item in result["facts"]["facts"].items():
+        mark = "✓" if item.get("ok") else "✗"
+        print(f"  {mark} {name}: {item.get('evidence', '')}")
+    print(f"  结论：{result['conclusion']}")
+    print(f"  建议：{' · '.join(result['actions'])}")
+    print(f"（事件流已落盘 data/events/{stream.trace_id}.jsonl）")
+    return 0
+
+
+def cmd_history(args: argparse.Namespace) -> int:
+    try:
+        config = load_config(args.config)
+    except ConfigError as exc:
+        _print_line(args.json, {"ok": False, "errors": [f"加载失败：{exc}"]})
+        return 1
+
+    toolbox = Toolbox(config, ModelRegistry(config), None)
+    records = toolbox.fault_history()
+    if args.json:
+        print(json.dumps({"ok": True, "count": len(records), "faults": records}, ensure_ascii=False))
+        return 0
+
+    if not records:
+        print("暂无故障历史（data/faults/ 为空）")
+        return 0
+    print(f"故障历史（{len(records)} 条）：")
+    for record in records:
+        print(
+            f"  #{record.get('seq', '?')} [{record.get('error_class', '')}] "
+            f"{record.get('model_ref', '')} · {record.get('ts', '')}"
+        )
+        if record.get("task"):
+            print(f"     任务：{record['task']}")
+        if record.get("detail"):
+            print(f"     详情：{str(record['detail'])[:120]}")
+    return 0
+
+
 def cmd_init_check(args: argparse.Namespace) -> int:
     try:
         config = load_config(args.config)
@@ -290,6 +460,12 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_tools(args)
     if args.command == "init-check":
         return cmd_init_check(args)
+    if args.command == "run":
+        return cmd_run(args)
+    if args.command == "diagnose":
+        return cmd_diagnose(args)
+    if args.command == "history":
+        return cmd_history(args)
     return cmd_pending(args.command)
 
 
