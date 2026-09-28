@@ -4,7 +4,8 @@
 - 跑分：按分组代表模型联网搜索（web_search 保底；失败不阻断，降级无跑分）
 - 画像：决策模型生成"每个模型适合什么任务"标签（仅 LLM 上下文，不落盘）
 - 确认：终端问答循环（满意 / 提修改意见重新生成）；--json 模式跳过交互，
-  返回 needs_confirmation（宿主可从事件流取画像，远程确认属阶段5）
+  返回 needs_confirmation（宿主可从事件流/返回值取画像；远程确认无专门 CLI/MCP 入口，
+  宿主注入 confirm_handler 或取 profile 后手改 model_prefs.md——留待阶段6）
 - 落盘：标签写 config/model_prefs.md（保留已有任务偏好区），事件 onboarding_labels_saved
 """
 from __future__ import annotations
@@ -81,7 +82,7 @@ def run_onboarding(
     labels = _decide_profile(toolbox, manager, benchmarks)
     _emit(toolbox, EventType.ONBOARDING_PROFILE, {"profile": labels})
 
-    # --json：不交互，画像随事件流输出，标签不落盘（宿主远程确认属阶段5）
+    # --json：不交互，画像随事件流输出，标签不落盘（远程确认留待阶段6/宿主）
     if json_mode:
         return {
             "ok": False,
