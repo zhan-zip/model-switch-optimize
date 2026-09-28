@@ -127,3 +127,43 @@ def test_tools_check_mock_failure_exit_code(workspace, capsys):
 def test_tools_missing_config(workspace, capsys):
     assert main(["tools"]) == 1
     assert "加载失败" in capsys.readouterr().out
+
+
+# -- init-check 命令（阶段3） ---------------------------------------------
+
+
+def test_init_check_mock_json(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    assert main(["init-check", "--mock", "--json"]) == 0
+    events = json.loads(capsys.readouterr().out)
+    types = [e["type"] for e in events]
+    assert types.count("onboarding_connectivity") == 4  # init 模板 4 模型全量
+    assert "onboarding_profile" in types
+    assert "onboarding_labels_saved" not in types  # --json 跳过确认，不落盘
+
+
+def test_init_check_mock_interactive(workspace, capsys, monkeypatch):
+    main(["init"])
+    capsys.readouterr()
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+    assert main(["init-check", "--mock"]) == 0
+    out = capsys.readouterr().out
+    assert "连通测试：4/4" in out
+    assert "标签已保存" in out
+    assert "模块就绪" in out
+    assert (workspace / "config" / "model_prefs.md").exists()
+
+
+def test_init_check_mock_per_group(workspace, capsys, monkeypatch):
+    main(["init"])
+    capsys.readouterr()
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+    assert main(["init-check", "--mock", "--per-group"]) == 0
+    out = capsys.readouterr().out
+    assert "连通测试：2/2 通过（每分组代表）" in out
+
+
+def test_init_check_missing_config(workspace, capsys):
+    assert main(["init-check", "--mock"]) == 1
+    assert "加载失败" in capsys.readouterr().out

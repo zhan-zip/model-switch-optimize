@@ -46,6 +46,12 @@ class MockModelClient:
                 text="[mock] ok",
                 latency_ms=42, usage=dict(_MOCK_USAGE),
             )
+        if outcome.startswith("{"):
+            return CallResult(
+                ok=True, model=model,
+                text=outcome,
+                latency_ms=42, usage=dict(_MOCK_USAGE),
+            )
         return CallResult(ok=False, model=model, error_class=outcome,
                           detail=f"[mock] {outcome}")
 

@@ -3,9 +3,9 @@
 > 独立模块，单独可用。模型**故障自修复 + 自动切换**：决策由"模型"做，
 > 程序只提供基础设施与工具箱。新增模型只需改配置，程序零改动。
 
-**开发状态**：阶段1、2 已完成（骨架与基础设施 + 工具层与 mock）。
+**开发状态**：阶段1~3 已完成（骨架 + 工具层 + 决策中枢与 onboarding）。
 
-## 快速开始（阶段1、2）
+## 快速开始
 
 ```bash
 pip install -e .
@@ -14,6 +14,9 @@ mso validate      # 校验配置（--json 输出结构化结果）
 mso tools         # 模型清单与状态
 mso tools --check --model <服务商/分组/模型>   # 连通测试（真实调用，事件流落盘）
 mso tools --check --mock                      # mock 演示（无真实 key 也能跑）
+mso init-check    # 初始化 onboarding：连通 + 联网跑分 + 模型画像 + 标签落盘
+                  #   --per-group 每分组代表抽样连通；--mock 无 key 演示；
+                  #   --json 输出事件流（跳过终端确认）
 pytest            # 运行测试（先安装 dev 依赖：pip install -e ".[dev]"）
 ```
 
@@ -39,7 +42,7 @@ pytest            # 运行测试（先安装 dev 依赖：pip install -e ".[dev]
 |---|---|---|
 | 1 | 骨架与基础设施：config / events / safety / cli(init·validate) | ✅ |
 | 2 | 工具层与 mock：model / client / health / tools / mocker | ✅ |
-| 3 | 决策中枢：manager 三决策点 + onboarding(init-check) | ⬜ |
+| 3 | 决策中枢：manager 三决策点 + onboarding(init-check) + 联网搜索 | ✅ |
 | 4 | 故障自愈闭环：切换 / 诊断四项 / 人工门禁修复 / 规则库 / 机械兜底 | ⬜ |
 | 5 | 周期探测 + 完整 CLI(run/diagnose/probe/history/auth) + 嵌入接口（mso run --json / Python 库）+ MCP 薄封装 | ⬜ |
 | 6 | 测试收尾 / Web 演示 / 软著材料 | ⬜ |

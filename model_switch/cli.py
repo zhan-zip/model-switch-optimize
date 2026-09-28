@@ -1,7 +1,8 @@
 """CLI 入口：mso <command>。
 
-已实现：init（生成配置模板）· validate（校验配置）· tools（模型清单与状态）。
-其余命令（init-check / run / diagnose / probe / history / auth）
+已实现：init（生成配置模板）· validate（校验配置）· tools（模型清单与状态）
+· init-check（初始化 onboarding：连通+跑分+画像+标签）。
+其余命令（run / diagnose / probe / history / auth）
 已注册占位，将在后续开发阶段实现。
 """
 from __future__ import annotations
@@ -22,12 +23,13 @@ from .config import (
 from .events import EventStream
 from .mocker import MockConsole, MockModelClient, MockWebSearch
 from .model import ModelRegistry
+from .onboarding import run_onboarding
 from .tools import Toolbox
+from .websearch import default_web_search
 
 DATA_DIRS = ("data/auth", "data/faults", "data/events")
 
 _PENDING_COMMANDS: dict[str, str] = {
-    "init-check": "初始化 onboarding（连通+跑分+画像+标签）",
     "run": "完整闭环处理任务（默认人读 / --json 事件流）",
     "diagnose": "手动触发诊断",
     "probe": "手动探测恢复",
@@ -56,6 +58,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_tools.add_argument("--model", default=None, help="只测指定模型（服务商/分组/模型名）")
     p_tools.add_argument("--mock", action="store_true", help="使用 mock（无真实 key 也能演示）")
     p_tools.add_argument("--json", action="store_true", help="输出 JSON 结果")
+
+    p_ic = sub.add_parser("init-check", help="初始化 onboarding（连通+跑分+画像+标签）")
+    p_ic.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
+    p_ic.add_argument("--per-group", action="store_true", help="连通测试只测每分组代表模型（默认全量）")
+    p_ic.add_argument("--mock", action="store_true", help="使用 mock（无真实 key 也能演示）")
+    p_ic.add_argument("--json", action="store_true", help="输出 JSON 事件流（跳过终端确认，标签不落盘）")
 
     for name, help_text in _PENDING_COMMANDS.items():
         sub.add_parser(name, help=f"{help_text}（后续阶段实现）")
@@ -208,6 +216,53 @@ def _print_line(as_json: bool, payload: dict[str, Any]) -> None:
             print(err)
 
 
+def cmd_init_check(args: argparse.Namespace) -> int:
+    try:
+        config = load_config(args.config)
+    except ConfigError as exc:
+        _print_line(args.json, {"ok": False, "errors": [f"加载失败：{exc}"]})
+        return 1
+
+    registry = ModelRegistry(config)
+    stream = EventStream(persist_dir=Path("data/events"))
+    if args.mock:
+        fallback_model = config.fallback_ref().model  # MockModelClient 按模型名匹配
+        profile_json = json.dumps(
+            {"labels": {str(status.ref): "mock标签、演示用" for status in registry.all()}},
+            ensure_ascii=False,
+        )
+        toolbox = Toolbox(
+            config, registry, stream,
+            model_client=MockModelClient(rules={fallback_model: profile_json}),
+            console=MockConsole(),
+            web_search_impl=MockWebSearch().search,
+            mock=True,
+        )
+    else:
+        toolbox = Toolbox(config, registry, stream, web_search_impl=default_web_search)
+
+    result = run_onboarding(toolbox, per_group=args.per_group, json_mode=args.json)
+
+    if args.json:
+        print(stream.to_json())
+        return 0  # needs_confirmation 属正常输出（画像在事件流中，宿主确认属阶段5）
+
+    connectivity = result.get("connectivity", {})
+    print(f"连通测试：{connectivity.get('ok', 0)}/{connectivity.get('total', 0)} 通过"
+          + ("（每分组代表）" if args.per_group else ""))
+    if result.get("status") == "ready":
+        labels = result.get("labels", {})
+        print(f"标签已保存：{result.get('prefs_path')}（{len(labels)} 个模型）")
+        print("模块就绪：后续 mso run 将按标签选型（阶段4/5 实现）")
+        print(f"（事件流已落盘 data/events/{stream.trace_id}.jsonl）")
+        return 0
+    if result.get("status") == "needs_confirmation":
+        print(result.get("detail", ""))
+        return 0
+    print(f"onboarding 未完成：{result.get('detail', result.get('status'))}")
+    return 1
+
+
 def cmd_pending(command: str) -> int:
     print(f"命令 `{command}` 已注册，将在后续开发阶段实现（见 README 开发阶段表）。")
     return 2
@@ -233,6 +288,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_validate(args)
     if args.command == "tools":
         return cmd_tools(args)
+    if args.command == "init-check":
+        return cmd_init_check(args)
     return cmd_pending(args.command)
 
 
