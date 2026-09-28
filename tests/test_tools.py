@@ -30,11 +30,14 @@ def _toolbox(tmp_path, monkeypatch, rules=None, stream=None):
     config = load_config(path)
     registry = ModelRegistry(config)
     mock_client = MockModelClient(rules=rules)
+    faults_dir = tmp_path / "faults"
+    faults_dir.mkdir(parents=True, exist_ok=True)
     return Toolbox(
         config, registry, stream,
         model_client=mock_client,
         console=MockConsole(),
         web_search_impl=MockWebSearch().search,
+        faults_dir=faults_dir,
     )
 
 
@@ -120,7 +123,7 @@ def test_fault_history_empty_and_records(tmp_path, monkeypatch):
     box = _toolbox(tmp_path, monkeypatch)
     assert box.fault_history() == []
     faults_dir = tmp_path / "faults"
-    faults_dir.mkdir()
+    # faults_dir already created by Toolbox._toolbox
     (faults_dir / "001.json").write_text(
         json.dumps({"model_ref": "a/g1/m1", "error_class": "401"}), encoding="utf-8"
     )
