@@ -74,9 +74,10 @@ def test_validate_missing_config(workspace, capsys):
     assert "配置文件不存在" in capsys.readouterr().out
 
 
-def test_pending_command_exit_code(workspace, capsys):
-    assert main(["probe"]) == 2
-    assert "后续" in capsys.readouterr().out
+def test_unknown_command_reports_error():
+    with pytest.raises(SystemExit) as exc:
+        main(["nope"])
+    assert exc.value.code == 2
 
 
 # -- tools 命令（阶段2） -----------------------------------------------
@@ -269,3 +270,69 @@ def test_history_json(workspace, capsys):
     assert payload["ok"] is True
     assert payload["count"] == 1
     assert payload["faults"][0]["error_class"] == "401"
+
+
+# -- probe / auth 命令（阶段5） --------------------------------------------
+
+
+def test_probe_empty_queue(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    assert main(["probe"]) == 0
+    assert "探测队列为空" in capsys.readouterr().out
+
+
+def test_probe_mock_recovers(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    assert main(["probe", "--mock"]) == 0
+    out = capsys.readouterr().out
+    assert "已入队演示故障" in out
+    assert "✓ 已恢复" in out
+    assert "回归可用池" in out
+
+
+def test_probe_mock_json(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    assert main(["probe", "--mock", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["probed"] == 1
+    assert len(payload["recovered"]) == 1
+
+
+def test_probe_missing_config(workspace, capsys):
+    assert main(["probe", "--mock"]) == 1
+    assert "加载失败" in capsys.readouterr().out
+
+
+def test_auth_add_masks_password(workspace, capsys, monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda prompt: "user@example.com")
+    monkeypatch.setattr("model_switch.cli.getpass.getpass", lambda prompt: "secret-pw-123")
+    assert main(["auth", "add", "provider-a"]) == 0
+    out = capsys.readouterr().out
+    assert "secret-pw-123" not in out  # 密码不回显
+    path = workspace / "data" / "auth" / "provider-a.json"
+    assert path.exists()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["account"] == "user@example.com"
+    assert payload["password"] == "secret-pw-123"  # 文件内存明文（data/auth 已 gitignore）
+
+
+def test_auth_list_and_remove(workspace, capsys, monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda prompt: "user@example.com")
+    monkeypatch.setattr("model_switch.cli.getpass.getpass", lambda prompt: "secret-pw-123")
+    main(["auth", "add", "provider-a"])
+    capsys.readouterr()
+    assert main(["auth", "list"]) == 0
+    out = capsys.readouterr().out
+    assert "provider-a" in out
+    assert "user@example.com" not in out  # 掩码显示
+    assert "us****" in out
+    assert main(["auth", "remove", "provider-a"]) == 0
+    assert main(["auth", "remove", "provider-a"]) == 1
+
+
+def test_auth_list_empty(workspace, capsys):
+    assert main(["auth", "list"]) == 0
+    assert "暂无账号" in capsys.readouterr().out

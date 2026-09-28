@@ -43,7 +43,10 @@ def _toolbox(tmp_path, stream=None, client=None):
 
 def _pipeline(box, tmp_path, **kwargs):
     return Pipeline(
-        box, recorder=FaultRecorder(None, faults_dir=tmp_path / "faults"), **kwargs
+        box,
+        recorder=FaultRecorder(None, faults_dir=tmp_path / "faults"),
+        probe_dir=tmp_path / "probe",
+        **kwargs,
     )
 
 

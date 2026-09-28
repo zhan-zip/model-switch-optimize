@@ -101,6 +101,7 @@ class Config:
     providers: tuple[Provider, ...]
     fallback: Fallback
     source: Path | None = None
+    probe_interval: int = 60  # 可选：周期探测间隔（秒），阶段5 probe.py
 
     def iter_model_refs(self) -> Iterator[ModelRef]:
         """按配置顺序产出全部模型（该顺序即机械兜底顺序）。"""
@@ -223,7 +224,16 @@ def _build(raw: dict[str, Any], source: Path | None) -> Config:
         model=str(fb_raw["model"]).strip(),
         key_env=str(fb_raw["key_env"]).strip(),
     )
-    return Config(providers=providers, fallback=fallback, source=source)
+    interval_raw = raw.get("probe_interval", 60)
+    try:
+        probe_interval = int(interval_raw)
+    except (TypeError, ValueError):
+        raise ConfigError(f"probe_interval 必须是整数（秒）：{interval_raw}")
+    if probe_interval <= 0:
+        raise ConfigError(f"probe_interval 必须为正整数（秒）：{probe_interval}")
+    return Config(
+        providers=providers, fallback=fallback, source=source, probe_interval=probe_interval
+    )
 
 
 def _build_provider(index: int, raw: Any) -> Provider:

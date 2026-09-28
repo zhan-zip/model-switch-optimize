@@ -1,16 +1,17 @@
 """CLI 入口：mso <command>。
 
-已实现：init（生成配置模板）· validate（校验配置）· tools（模型清单与状态）
-· init-check（初始化 onboarding：连通+跑分+画像+标签）
-· run（完整闭环：选型->调用->故障切换->机械兜底，可选自动诊断）
-· diagnose（手动诊断：四项检查->结论）· history（故障历史）。
-其余命令（probe / auth）已注册占位，将在后续开发阶段实现。
+已实现（九命令全齐）：
+init（生成配置模板）· validate（校验配置）· tools（模型清单与状态）
+· init-check（onboarding）· run（完整闭环）· diagnose（手动诊断）
+· history（故障历史）· probe（周期探测）· auth（控制台账号）· mcp（MCP server）。
 """
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -28,15 +29,13 @@ from .mocker import MockConsole, MockDecisionClient, MockModelClient, MockWebSea
 from .model import ModelRegistry
 from .onboarding import run_onboarding
 from .pipeline import OUTCOME_FALLBACK, OUTCOME_OK, OUTCOME_SWITCHED, Pipeline
+from .probe import ProbeQueue, probe_once, probe_watch
 from .tools import Toolbox
 from .websearch import default_web_search
 
-DATA_DIRS = ("data/auth", "data/faults", "data/events")
+DATA_DIRS = ("data/auth", "data/faults", "data/events", "data/probe")
 
-_PENDING_COMMANDS: dict[str, str] = {
-    "probe": "手动探测恢复",
-    "auth": "管理控制台账号",
-}
+_PENDING_COMMANDS: dict[str, str] = {}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -84,8 +83,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_hist.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
     p_hist.add_argument("--json", action="store_true", help="输出 JSON 结果")
 
-    for name, help_text in _PENDING_COMMANDS.items():
-        sub.add_parser(name, help=f"{help_text}（后续阶段实现）")
+    p_probe = sub.add_parser("probe", help="探测故障模型队列（恢复者出队+回归可用池）")
+    p_probe.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
+    p_probe.add_argument("--mock", action="store_true", help="使用 mock（演示：入队一个示例故障并探测恢复）")
+    p_probe.add_argument("--watch", action="store_true", help="循环探测（按 probe_interval，Ctrl+C 停；默认单轮）")
+    p_probe.add_argument("--interval", type=int, default=None, help="循环间隔秒（默认取配置 probe_interval）")
+    p_probe.add_argument("--json", action="store_true", help="输出 JSON 结果")
+
+    p_auth = sub.add_parser("auth", help="管理控制台账号（data/auth/，输出全程掩码）")
+    auth_sub = p_auth.add_subparsers(dest="auth_action", metavar="<action>", required=True)
+    a_add = auth_sub.add_parser("add", help="录入/更新服务商账号（密码不回显）")
+    a_add.add_argument("provider", help="服务商名称")
+    a_list = auth_sub.add_parser("list", help="列出已存账号（掩码显示）")
+    a_remove = auth_sub.add_parser("remove", help="删除服务商账号")
+    a_remove.add_argument("provider", help="服务商名称")
+
+    p_mcp = sub.add_parser("mcp", help="启动 MCP server（stdio，供 MCP 宿主零代码接入）")
+    p_mcp.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
 
     return parser
 
@@ -386,6 +400,135 @@ def cmd_history(args: argparse.Namespace) -> int:
     return 0
 
 
+# -- probe / auth 命令（阶段5） ---------------------------------------------
+
+
+def cmd_probe(args: argparse.Namespace) -> int:
+    try:
+        stream = EventStream(persist_dir=Path("data/events"))
+        config = load_config(args.config)
+        registry = ModelRegistry(config)
+        if args.mock:
+            # probe 的 mock 演示不注入故障（探测要演示"恢复"）
+            client = MockDecisionClient(
+                default_model=str(registry.all()[0].ref),
+                switch_to=str(config.fallback_ref()),
+            )
+            toolbox = Toolbox(
+                config, registry, stream,
+                model_client=client,
+                console=MockConsole(),
+                web_search_impl=MockWebSearch().search,
+                mock=True,
+            )
+        else:
+            toolbox = Toolbox(config, registry, stream, web_search_impl=default_web_search)
+    except ConfigError as exc:
+        _print_line(args.json, {"ok": False, "errors": [f"加载失败：{exc}"]})
+        return 1
+
+    if args.mock:
+        first = toolbox.registry.all()[0]
+        ProbeQueue().enqueue(str(first.ref), error_class="401", task="[mock] 演示故障")
+        if not args.json:
+            print(f"（mock：已入队演示故障 {first.ref}）")
+
+    if args.watch:
+        interval = args.interval or toolbox.config.probe_interval
+        print(f"循环探测中（间隔 {interval}s，Ctrl+C 停止）…")
+        try:
+            summary = probe_watch(toolbox, interval=args.interval)
+        except KeyboardInterrupt:
+            print("\n已停止")
+            return 0
+        recovered = summary.get("recovered", [])
+        print(f"循环探测结束：{summary.get('rounds')} 轮，累计恢复 {len(recovered)} 个模型")
+        return 0
+
+    result = probe_once(toolbox)
+    if args.json:
+        payload = dict(result)
+        payload["trace_id"] = stream.trace_id
+        print(json.dumps(payload, ensure_ascii=False, default=str))
+        return 0
+
+    if result["probed"] == 0:
+        print("探测队列为空（无待恢复模型；故障模型在 run 时自动入队）")
+        return 0
+    print(f"单轮探测（{result['probed']} 个）：")
+    for ref, ok in result["results"].items():
+        mark = "✓ 已恢复" if ok else "✗ 未恢复（留队，下轮再测）"
+        print(f"  {mark}  {ref}")
+    if result["recovered"]:
+        print(f"恢复 {len(result['recovered'])} 个：{' · '.join(result['recovered'])}（已回归可用池）")
+    print(f"（事件流已落盘 data/events/{stream.trace_id}.jsonl）")
+    return 0
+
+
+AUTH_DIR = Path("data/auth")
+
+
+def _auth_path(provider: str) -> Path:
+    safe = "".join(c for c in provider if c.isalnum() or c in "-_.")
+    return AUTH_DIR / f"{safe}.json"
+
+
+def _mask(value: str) -> str:
+    if len(value) <= 2:
+        return "*" * len(value)
+    return value[:2] + "****" + value[-1:]
+
+
+def cmd_auth(args: argparse.Namespace) -> int:
+    if args.auth_action == "add":
+        path = _auth_path(args.provider)
+        try:
+            account = input(f"[{args.provider}] 账号：").strip()
+            password = getpass.getpass(f"[{args.provider}] 密码（输入不回显）：")
+        except EOFError:
+            print("输入被中断，未保存")
+            return 1
+        if not account:
+            print("账号不能为空，未保存")
+            return 1
+        AUTH_DIR.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "provider": args.provider,
+            "account": account,
+            "password": password,  # 存 data/auth/（已 .gitignore），修复工具读取；不回显任何输出
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"已保存：{path}（账号 {account[:2]}****，密码不回显）")
+        return 0
+
+    if args.auth_action == "remove":
+        path = _auth_path(args.provider)
+        if path.exists():
+            path.unlink()
+            print(f"已删除：{path}")
+            return 0
+        print(f"未找到 {args.provider} 的账号")
+        return 1
+
+    # list
+    if not AUTH_DIR.exists():
+        print("暂无账号（mso auth add <服务商> 录入）")
+        return 0
+    files = sorted(AUTH_DIR.glob("*.json"))
+    if not files:
+        print("暂无账号（mso auth add <服务商> 录入）")
+        return 0
+    print(f"已存账号（{len(files)} 个）：")
+    for f in files:
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        print(f"  {data.get('provider', f.stem)}  账号 {_mask(str(data.get('account', '')))}  · {data.get('ts', '')}")
+    return 0
+
+
 def cmd_init_check(args: argparse.Namespace) -> int:
     try:
         config = load_config(args.config)
@@ -466,6 +609,15 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_diagnose(args)
     if args.command == "history":
         return cmd_history(args)
+    if args.command == "probe":
+        return cmd_probe(args)
+    if args.command == "auth":
+        return cmd_auth(args)
+    if args.command == "mcp":
+        from .mcp import serve
+
+        serve(args.config)
+        return 0
     return cmd_pending(args.command)
 
 

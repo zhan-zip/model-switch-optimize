@@ -33,4 +33,7 @@
 
 阶段5~6 见 README 开发阶段表（周期探测 / 嵌入接口与 MCP / 收尾与软著材料）。
 """
+from .switcher import ModelSwitcher
+
+__all__ = ["ModelSwitcher"]
 __version__ = "1.0.0"

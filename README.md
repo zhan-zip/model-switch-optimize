@@ -3,7 +3,7 @@
 > 独立模块，单独可用。模型**故障自修复 + 自动切换**：决策由"模型"做，
 > 程序只提供基础设施与工具箱。新增模型只需改配置，程序零改动。
 
-**开发状态**：阶段1~4 已完成（骨架 + 工具层 + 决策中枢 + 故障自愈闭环）。
+**开发状态**：阶段1~5 已完成（骨架 + 工具层 + 决策中枢 + 故障自愈闭环 + 周期探测+嵌入接口+MCP）。
 
 ## 快速开始
 
@@ -22,6 +22,9 @@ mso run "任务"    # 完整闭环：选型 → 调用 → 故障自动切换（
                   #   --json 事件流；--mock 无 key 演示故障切换闭环
 mso diagnose <服务商>   # 手动诊断：四项检查（可达/余额/分组/连通）→ 结论与建议
 mso history       # 故障历史（data/faults/）
+mso probe         # 探测故障模型队列（默认单轮；--watch 循环；--mock 演示恢复）
+mso auth          # 管理控制台账号（add/list/remove）
+mso mcp           # 启动 MCP server（stdio，供 MCP 宿主零代码接入）
 pytest            # 运行测试（先安装 dev 依赖：pip install -e ".[dev]"）
 ```
 
@@ -49,7 +52,7 @@ pytest            # 运行测试（先安装 dev 依赖：pip install -e ".[dev]
 | 2 | 工具层与 mock：model / client / health / tools / mocker | ✅ |
 | 3 | 决策中枢：manager 三决策点 + onboarding(init-check) + 联网搜索 | ✅ |
 | 4 | 故障自愈闭环：切换 / 诊断四项 / 人工门禁修复 / 规则库 / 机械兜底 | ✅ |
-| 5 | 周期探测 + CLI 收尾(probe/auth) + 嵌入接口（mso run --json / Python 库）+ MCP 薄封装 | ⬜ |
+| 5 | 周期探测 + CLI 收尾(probe/auth) + 嵌入接口（mso run --json / Python 库）+ MCP 薄封装 | ✅ |
 | 6 | 测试收尾 / Web 演示 / 软著材料 | ⬜ |
 
 ## 嵌入与对接（规划）

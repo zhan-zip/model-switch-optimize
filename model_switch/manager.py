@@ -221,7 +221,7 @@ class DecisionManager:
             confirmed = self._confirm(decision)
         elif confirm_mode == "once" and matched is None:
             confirmed = self._confirm(decision)
-            if confirmed and str(decision.decision["model"]) != matched:
+            if confirmed:
                 add_task_pref(task, str(decision.decision["model"]), self.prefs_path)
         return replace(decision, confirmed=confirmed)
 

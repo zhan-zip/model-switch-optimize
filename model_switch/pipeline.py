@@ -15,6 +15,7 @@ from typing import Any
 from .events import EventType
 from .history import DEFAULT_FAULTS_DIR, FaultRecorder
 from .manager import DecisionError, DecisionManager
+from .probe import DEFAULT_PROBE_DIR, ProbeQueue
 from .safety import redact
 
 MAX_SWITCHES = 5
@@ -51,12 +52,24 @@ class Pipeline:
         recorder: FaultRecorder | None = None,
         faults_dir: Any = DEFAULT_FAULTS_DIR,
         max_switches: int = MAX_SWITCHES,
+        probe_queue: ProbeQueue | None = None,
+        probe_dir: Any = DEFAULT_PROBE_DIR,
     ):
         self.toolbox = toolbox
         self.confirm_mode = confirm_mode
         self.max_switches = max_switches
         self.manager = manager
         self.recorder = recorder or FaultRecorder(toolbox.stream, faults_dir=faults_dir)
+        self.probe_queue = probe_queue if probe_queue is not None else ProbeQueue(probe_dir)
+
+    def _on_fault(self, model_ref: str, error_class: str, detail: str, task: str) -> None:
+        """故障入档 + 登记探测队列（恢复探测走 mso probe / --watch）。"""
+
+        self.recorder.record(model_ref, error_class, detail=detail, task=task)
+        try:
+            self.probe_queue.enqueue(model_ref, error_class=error_class, task=task)
+        except OSError:
+            pass  # 探测队列写入失败不阻断主流程
 
     def run(self, task: str) -> RunResult:
         """执行一次任务闭环。"""
@@ -88,9 +101,7 @@ class Pipeline:
                 )
             failed.add(current)
             last_error = result.error_class
-            self.recorder.record(
-                current, result.error_class, detail=result.detail, task=task
-            )
+            self._on_fault(current, result.error_class, result.detail, task)
             if switches >= self.max_switches:
                 return self._mechanical(task, failed, attempts, switches, trace_id, last_error)
             try:
@@ -139,7 +150,7 @@ class Pipeline:
                 )
             failed.add(ref)
             last_error = call.error_class
-            self.recorder.record(ref, call.error_class, detail=call.detail, task=task)
+            self._on_fault(ref, call.error_class, call.detail, task)
         self._emit(
             EventType.MECHANICAL_FALLBACK,
             {"tried_models": list(results), "results": results},
