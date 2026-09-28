@@ -306,6 +306,23 @@ def test_probe_missing_config(workspace, capsys):
     assert "加载失败" in capsys.readouterr().out
 
 
+def test_run_mock_writes_no_real_probe_queue(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    assert main(["run", "写个爬虫", "--mock"]) == 0
+    # mock 演示故障只入临时探测队列，不写真实 data/probe
+    assert not (workspace / "data" / "probe" / "queue.json").exists()
+
+
+def test_probe_mock_writes_no_real_probe_queue(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    assert main(["probe", "--mock"]) == 0
+    out = capsys.readouterr().out
+    assert "✓ 已恢复" in out
+    assert not (workspace / "data" / "probe" / "queue.json").exists()
+
+
 def test_auth_add_masks_password(workspace, capsys, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda prompt: "user@example.com")
     monkeypatch.setattr("model_switch.cli.getpass.getpass", lambda prompt: "secret-pw-123")

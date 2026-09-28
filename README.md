@@ -20,10 +20,11 @@ mso init-check    # 初始化 onboarding：连通 + 联网跑分 + 模型画像 
 mso run "任务"    # 完整闭环：选型 → 调用 → 故障自动切换（任务不中断）→ 机械兜底
                   #   启动时自动恢复探测队列中的故障模型（跳过最近探测失败的模型）
                   #   --diagnose 故障后自动诊断；--confirm once 选型确认一次；
-                  #   --json 事件流；--mock 无 key 演示故障切换闭环
+                  #   --json 事件流；--mock 无 key 演示故障切换闭环（演示故障入临时队列）
 mso diagnose <服务商>   # 手动诊断：四项检查（可达/余额/分组/连通）→ 结论与建议
 mso history       # 故障历史（data/faults/）
-mso probe         # 探测故障模型队列（默认单轮；--watch 循环；--mock 演示恢复）
+mso probe         # 探测故障模型队列（默认单轮；--watch 循环；--mock 自包含演示恢复，
+                  #   演示故障走临时队列，不写真实 data/probe）
 mso auth          # 管理控制台账号（add/list/remove）
 mso mcp           # 启动 MCP server（stdio，供 MCP 宿主零代码接入）
 pytest            # 运行测试（先安装 dev 依赖：pip install -e ".[dev]"）

@@ -11,6 +11,7 @@ import argparse
 import getpass
 import json
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -283,7 +284,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         _print_line(args.json, {"ok": False, "errors": [f"加载失败：{exc}"]})
         return 1
 
-    probe_queue = ProbeQueue()
+    if args.mock:
+        # mock 演示故障只入临时探测队列，不污染真实运行态（data/probe）
+        probe_queue = ProbeQueue(Path(tempfile.mkdtemp(prefix="mso-mock-probe-")))
+    else:
+        probe_queue = ProbeQueue()
     pipeline = Pipeline(toolbox, confirm_mode=args.confirm, probe_queue=probe_queue)
     result = pipeline.run(args.task)
 
@@ -428,17 +433,20 @@ def cmd_probe(args: argparse.Namespace) -> int:
         _print_line(args.json, {"ok": False, "errors": [f"加载失败：{exc}"]})
         return 1
 
+    demo_queue: ProbeQueue | None = None
     if args.mock:
+        # mock 演示故障只入临时探测队列，不污染真实运行态（data/probe）
+        demo_queue = ProbeQueue(Path(tempfile.mkdtemp(prefix="mso-mock-probe-")))
         first = toolbox.registry.all()[0]
-        ProbeQueue().enqueue(str(first.ref), error_class="401", task="[mock] 演示故障")
+        demo_queue.enqueue(str(first.ref), error_class="401", task="[mock] 演示故障")
         if not args.json:
-            print(f"（mock：已入队演示故障 {first.ref}）")
+            print(f"（mock：已入队演示故障 {first.ref}，临时队列不写真实 data/probe）")
 
     if args.watch:
         interval = args.interval or toolbox.config.probe_interval
         print(f"循环探测中（间隔 {interval}s，Ctrl+C 停止）…")
         try:
-            summary = probe_watch(toolbox, interval=args.interval)
+            summary = probe_watch(toolbox, interval=args.interval, queue=demo_queue)
         except KeyboardInterrupt:
             print("\n已停止")
             return 0
@@ -446,7 +454,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
         print(f"循环探测结束：{summary.get('rounds')} 轮，累计恢复 {len(recovered)} 个模型")
         return 0
 
-    result = probe_once(toolbox)
+    result = probe_once(toolbox, demo_queue)
     if args.json:
         payload = dict(result)
         payload["trace_id"] = stream.trace_id
