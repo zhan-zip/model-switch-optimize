@@ -73,4 +73,4 @@ pytest            # 运行测试（先安装 dev 依赖：pip install -e ".[dev]
 
 - Python 3.10+；`pip install -e .` 一次安装
 - 零数据库、零服务端、单进程可跑
-- 依赖：PyYAML（运行）；pytest（开发）
+- 依赖：PyYAML（运行）；mcp（运行，MCP 宿主接入）；pytest（开发）
