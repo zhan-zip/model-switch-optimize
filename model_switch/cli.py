@@ -283,7 +283,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         _print_line(args.json, {"ok": False, "errors": [f"加载失败：{exc}"]})
         return 1
 
-    pipeline = Pipeline(toolbox, confirm_mode=args.confirm)
+    probe_queue = ProbeQueue()
+    pipeline = Pipeline(toolbox, confirm_mode=args.confirm, probe_queue=probe_queue)
     result = pipeline.run(args.task)
 
     diagnosis: list[dict[str, Any]] = []

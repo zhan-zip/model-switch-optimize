@@ -207,3 +207,31 @@ def test_run_result_carries_trace_id(tmp_path):
     box = _toolbox(tmp_path, stream=stream, client=MockModelClient())
     result = _pipeline(box, tmp_path).run("任务")
     assert result.trace_id == stream.trace_id
+
+
+def test_run_restores_from_probe_queue(tmp_path):
+    """测试跨进程故障记忆恢复：启动时从 probe 队列恢复故障模型状态。"""
+    from model_switch.probe import ProbeQueue
+
+    # 预置 probe 队列：两个模型已知故障
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir(parents=True, exist_ok=True)
+    queue = ProbeQueue(probe_dir)
+    queue.enqueue("a/g1/m1", error_class="401", task="任务A")
+    queue.enqueue("a/g1/m2", error_class="429", task="任务B")
+
+    # 创建 pipeline，注入 probe_queue
+    stream = EventStream()
+    client = MockModelClient()
+    toolbox = _toolbox(tmp_path, stream=stream, client=client)
+    pipeline = Pipeline(
+        toolbox,
+        recorder=FaultRecorder(None, faults_dir=tmp_path / "faults"),
+        probe_dir=probe_dir,
+    )
+
+    # 验证：启动时自动恢复故障状态
+    pipeline.restore_from_probe_queue()
+    assert pipeline.toolbox.registry.find("a/g1/m1").available is False
+    assert pipeline.toolbox.registry.find("a/g1/m2").available is False
+    assert pipeline.toolbox.registry.find("b/g1/m3").available is None

@@ -62,17 +62,11 @@ class Pipeline:
         self.recorder = recorder or FaultRecorder(toolbox.stream, faults_dir=faults_dir)
         self.probe_queue = probe_queue if probe_queue is not None else ProbeQueue(probe_dir)
 
-    def _on_fault(self, model_ref: str, error_class: str, detail: str, task: str) -> None:
-        """故障入档 + 登记探测队列（恢复探测走 mso probe / --watch）。"""
-
-        self.recorder.record(model_ref, error_class, detail=detail, task=task)
-        try:
-            self.probe_queue.enqueue(model_ref, error_class=error_class, task=task)
-        except OSError:
-            pass  # 探测队列写入失败不阻断主流程
-
     def run(self, task: str) -> RunResult:
         """执行一次任务闭环。"""
+
+        # 启动时从探测队列恢复故障模型状态
+        self.restore_from_probe_queue()
 
         trace_id = self.toolbox.stream.trace_id if self.toolbox.stream is not None else ""
         self._emit(EventType.PIPELINE_STARTED, {"task": task})
@@ -158,6 +152,32 @@ class Pipeline:
         return self._finish(
             RunResult(False, OUTCOME_FAILED, "", "", attempts, last_error, switches, trace_id)
         )
+
+    def restore_from_probe_queue(self) -> None:
+        """启动时从探测队列恢复故障模型状态。
+
+        读取持久化的探测队列，将其中记录的故障模型在 ModelRegistry 中标记为不可用，
+        以便后续选型/切换逻辑跳过这些已知故障的模型。
+        """
+        for entry in self.probe_queue.entries():
+            ref = entry.get("model_ref")
+            if not ref:
+                continue
+            status = self.toolbox.registry.find(ref)
+            if status is not None:
+                status.available = False
+                status.last_error_class = entry.get("error_class", "")
+                status.last_error_detail = entry.get("task", "")
+                status.last_checked = entry.get("enqueued_at", "")
+
+    def _on_fault(self, model_ref: str, error_class: str, detail: str, task: str) -> None:
+        """故障入档 + 登记探测队列（恢复探测走 mso probe / --watch）。"""
+
+        self.recorder.record(model_ref, error_class, detail=detail, task=task)
+        try:
+            self.probe_queue.enqueue(model_ref, error_class=error_class, task=task)
+        except OSError:
+            pass  # 探测队列写入失败不阻断主流程
 
     # -- 内部 ---------------------------------------------------------
 

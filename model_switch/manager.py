@@ -209,8 +209,11 @@ class DecisionManager:
             model = str(data.get("model", "")).strip()
             if not model:
                 return "缺少 model 字段"
-            if self.toolbox.registry.find(model) is None:
+            status = self.toolbox.registry.find(model)
+            if status is None:
                 return f"model 必须是清单内的完整引用：{model}"
+            if status.available is False:
+                return f"model {model} 当前不可用（已知故障或探测中），请选择其他模型"
             if not str(data.get("reason", "")).strip():
                 return "缺少 reason 字段"
             return ""

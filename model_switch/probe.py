@@ -29,6 +29,7 @@ class ProbeQueue:
         return self.probe_dir / "queue.json"
 
     def entries(self) -> list[dict[str, Any]]:
+        """获取所有队列条目（兼容 load_all 语义）。"""
         if not self._path.exists():
             return []
         try:
@@ -36,6 +37,10 @@ class ProbeQueue:
             return data if isinstance(data, list) else []
         except (OSError, json.JSONDecodeError):
             return []
+
+    def load_all(self) -> list[dict[str, Any]]:
+        """加载所有队列条目（别名方法，语义更明确）。"""
+        return self.entries()
 
     def enqueue(self, model_ref: str, *, error_class: str = "", task: str = "") -> dict[str, Any]:
         """故障模型入队（已在队则更新错误与时间）；返回该条目。"""
