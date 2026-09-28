@@ -1,9 +1,13 @@
-"""mcp 模块测试：MCP 薄封装（工具清单 / 调用 / 高危确认门槛）。"""
+"""mcp 模块测试：MCP 薄封装（工具清单 / 调用 / 高危确认门槛 / 版本防御）。"""
 import asyncio
 import json
+import sys
+import types
+
+import pytest
 
 from model_switch import ModelSwitcher
-from model_switch.mcp import build_mcp_server
+from model_switch.mcp import _resolve_fastmcp, build_mcp_server
 
 VALID_YAML = """\
 providers:
@@ -95,3 +99,26 @@ def test_apply_fix_after_confirmation_recovers(tmp_path):
     )
     assert payload["ok"] is True
     assert payload["status"] == "recovered"
+
+
+def test_resolve_fastmcp_ok_on_mcp1(monkeypatch):
+    # 正常路径：mcp 1.x 环境直接返回 FastMCP 类
+    stub = types.ModuleType("mcp.server.fastmcp")
+    real = sys.modules["mcp.server.fastmcp"]
+    try:
+        stub.FastMCP = real.FastMCP
+        monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", stub)
+        assert _resolve_fastmcp() is real.FastMCP
+    finally:
+        monkeypatch.undo()
+
+
+def test_resolve_fastmcp_raises_clear_error_when_mcp2(monkeypatch):
+    # 模拟 mcp 2.x：fastmcp 墓碑 shim 无 FastMCP 属性 -> ImportError -> 清晰 RuntimeError
+    stub = types.ModuleType("mcp.server.fastmcp")
+    monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", stub)
+    with pytest.raises(RuntimeError) as exc:
+        _resolve_fastmcp()
+    msg = str(exc.value)
+    assert "mcp>=1.29,<2.0.0" in msg
+    assert "pip install" in msg

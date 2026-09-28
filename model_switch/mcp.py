@@ -19,10 +19,27 @@ import json
 from pathlib import Path
 from typing import Any
 
-try:
-    from mcp.server.fastmcp import FastMCP
-except ImportError:
-    from mcp import FastMCP
+def _resolve_fastmcp():
+    """解析 FastMCP 类：mcp 1.x 用 mcp.server.fastmcp.FastMCP；识别到 2.x 时给清晰降级指引。"""
+
+    try:
+        from mcp.server.fastmcp import FastMCP  # mcp 1.x
+        return FastMCP
+    except ImportError:
+        # mcp 2.x：fastmcp 模块为墓碑 shim（import 即抛 ModuleNotFoundError），顶层亦无 FastMCP
+        import importlib.metadata as _md
+
+        try:
+            _ver = _md.version("mcp")
+        except Exception:
+            _ver = "未知"
+        raise RuntimeError(
+            f"检测到 mcp {_ver}，本模块基于 mcp 1.x（需 mcp>=1.29,<2.0.0）。"
+            '请执行：pip install "mcp>=1.29,<2.0.0"'
+        ) from None
+
+
+FastMCP = _resolve_fastmcp()
 
 from .client import ErrorClass  # noqa: F401  文档引用
 from .config import DEFAULT_CONFIG_PATH
