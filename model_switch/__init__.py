@@ -7,5 +7,21 @@
 - events  事件流（trace_id / seq / cause 追溯链）
 - safety  全链路脱敏
 - cli     mso init（生成配置模板）· mso validate（校验配置）
+
+阶段2（工具层与 mock）：
+- model   ModelStatus / ModelRegistry（运行时状态）
+- client  OpenAI 兼容调用（urllib）· ErrorClass 错误分类
+- health  test_connectivity 连通测试
+- tools   Toolbox 六工具 + dispatch 统一分发
+- mocker  Mock 三件套（无真实 key 跑通全闭环）
+
+阶段3（决策中枢与 onboarding）：
+- manager     三决策点（choose_model / plan_recovery / conclude_diagnosis）
+- onboarding  init-check 流程（连通 -> 跑分 -> 画像 -> 标签）
+- prefs       model_prefs.md 读写（模型标签 + 任务偏好）
+- websearch   DuckDuckGo 简版联网搜索（保底）
+- cli         mso tools · mso init-check
+
+阶段4~6 见 README 开发阶段表（故障自愈闭环 / 探测与完整 CLI / 收尾与软著材料）。
 """
 __version__ = "1.0.0"
