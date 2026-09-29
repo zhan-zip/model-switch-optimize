@@ -43,6 +43,11 @@ def _toolbox(tmp_path, stream=None, client=None):
 
 
 def _pipeline(box, tmp_path, **kwargs):
+    # 测试隔离：prefs/pause/stats 默认全走 tmp（防止污染真实 config/model_prefs.md、
+    # data/pause.json、data/stats.json——切换成功沉淀偏好 / 每次调用记统计都会写盘）
+    kwargs.setdefault("prefs_path", tmp_path / "prefs.md")
+    kwargs.setdefault("pause_path", tmp_path / "pause.json")
+    kwargs.setdefault("stats_path", tmp_path / "stats.json")
     return Pipeline(
         box,
         recorder=FaultRecorder(None, faults_dir=tmp_path / "faults"),
@@ -190,11 +195,7 @@ def test_run_confirm_mode_passthrough(tmp_path):
     stream = EventStream()
     client = MockModelClient(rules={"m3": CHOOSE})  # 决策者返回选型 JSON
     box = _toolbox(tmp_path, stream=stream, client=client)
-    pipeline = Pipeline(
-        box,
-        recorder=FaultRecorder(None, faults_dir=tmp_path / "faults"),
-        confirm_mode="always",
-    )
+    pipeline = _pipeline(box, tmp_path, confirm_mode="always")
     result = pipeline.run("任务")  # confirm_handler 未注入 -> 默认 granted
     assert result.ok is True
     types = [e.type for e in stream]
@@ -228,6 +229,9 @@ def test_run_restores_from_probe_queue(tmp_path):
         toolbox,
         recorder=FaultRecorder(None, faults_dir=tmp_path / "faults"),
         probe_dir=probe_dir,
+        prefs_path=tmp_path / "prefs.md",
+        pause_path=tmp_path / "pause.json",
+        stats_path=tmp_path / "stats.json",
     )
 
     # 验证：启动时自动恢复故障状态
@@ -248,12 +252,7 @@ def test_run_llm_switch_success_saves_plan_pref(tmp_path):
         default_model="a/g1/m1", switch_to="a/g1/m2", fail_models={"m1": "401"}
     )
     box = _toolbox(tmp_path, stream=stream, client=client)
-    pipeline = Pipeline(
-        box,
-        recorder=FaultRecorder(None, faults_dir=tmp_path / "faults"),
-        probe_dir=tmp_path / "probe",
-        prefs_path=prefs_path,
-    )
+    pipeline = _pipeline(box, tmp_path)
 
     result = pipeline.run("写个爬虫")
 
@@ -273,12 +272,7 @@ def test_run_pref_hit_second_time_program_switch(tmp_path):
     )
     client = MockDecisionClient(default_model="a/g1/m1", fail_models={"m1": "401"})
     box = _toolbox(tmp_path, stream=stream, client=client)
-    pipeline = Pipeline(
-        box,
-        recorder=FaultRecorder(None, faults_dir=tmp_path / "faults"),
-        probe_dir=tmp_path / "probe",
-        prefs_path=prefs_path,
-    )
+    pipeline = _pipeline(box, tmp_path)
 
     result = pipeline.run("写个爬虫")
 
@@ -309,12 +303,7 @@ def test_run_pref_hit_target_fails_then_llm_corrects(tmp_path):
         fail_models={"m1": "401", "m2": "401"},  # 偏好目标 m2 同错类再故障
     )
     box = _toolbox(tmp_path, stream=stream, client=client)
-    pipeline = Pipeline(
-        box,
-        recorder=FaultRecorder(None, faults_dir=tmp_path / "faults"),
-        probe_dir=tmp_path / "probe",
-        prefs_path=prefs_path,
-    )
+    pipeline = _pipeline(box, tmp_path)
 
     result = pipeline.run("写个爬虫")
 
@@ -351,13 +340,7 @@ def test_run_applies_pause_seconds_and_persists(tmp_path):
     #          -> 切换决策(m3, 冷却 m2) -> m3 任务成功
     client = SequenceClient([choose_m1, fail_429, switch_m2, fail_429, switch_m3])
     box = _toolbox(tmp_path, stream=stream, client=client)
-    pipeline = Pipeline(
-        box,
-        recorder=FaultRecorder(None, faults_dir=tmp_path / "faults"),
-        probe_dir=tmp_path / "probe",
-        prefs_path=tmp_path / "prefs.md",
-        pause_path=pause_path,
-    )
+    pipeline = _pipeline(box, tmp_path)
     result = pipeline.run("任务")
 
     assert result.ok is True
@@ -400,13 +383,7 @@ def test_run_restores_pause_state(tmp_path):
     stream = EventStream()
     client = MockModelClient(rules={"m3": "401"})  # 选型决策全灭 -> 机械兜底
     box = _toolbox(tmp_path, stream=stream, client=client)
-    pipeline = Pipeline(
-        box,
-        recorder=FaultRecorder(None, faults_dir=tmp_path / "faults"),
-        probe_dir=tmp_path / "probe",
-        prefs_path=tmp_path / "prefs.md",
-        pause_path=pause_path,
-    )
+    pipeline = _pipeline(box, tmp_path)
     result = pipeline.run("任务")
 
     # m1 恢复暂停态被兜底跳过；m2 过期暂停被清扫、可兜底
@@ -426,14 +403,7 @@ def test_run_records_stats_per_model(tmp_path):
         default_model="a/g1/m1", switch_to="a/g1/m2", fail_models={"m1": "401"}
     )
     box = _toolbox(tmp_path, stream=EventStream(), client=client)
-    pipeline = Pipeline(
-        box,
-        recorder=FaultRecorder(None, faults_dir=tmp_path / "faults"),
-        probe_dir=tmp_path / "probe",
-        prefs_path=tmp_path / "prefs.md",
-        pause_path=tmp_path / "pause.json",
-        stats_path=stats_path,
-    )
+    pipeline = _pipeline(box, tmp_path, stats_path=stats_path)
     pipeline.run("写个爬虫")  # m1 失败 401 -> 切 m2 成功
 
     stats = load_stats(stats_path)
@@ -451,14 +421,7 @@ def test_run_mechanical_records_stats(tmp_path):
     stats_path = tmp_path / "stats.json"
     client = MockModelClient(rules={"m3": "401"})  # 决策全灭 -> 机械兜底
     box = _toolbox(tmp_path, stream=EventStream(), client=client)
-    pipeline = Pipeline(
-        box,
-        recorder=FaultRecorder(None, faults_dir=tmp_path / "faults"),
-        probe_dir=tmp_path / "probe",
-        prefs_path=tmp_path / "prefs.md",
-        pause_path=tmp_path / "pause.json",
-        stats_path=stats_path,
-    )
+    pipeline = _pipeline(box, tmp_path, stats_path=stats_path)
     pipeline.run("任务")  # 兜底：m3 决策调用失败（不记）-> m1 兜底成功（记）
 
     stats = load_stats(stats_path)

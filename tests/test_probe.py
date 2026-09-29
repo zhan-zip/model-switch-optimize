@@ -142,11 +142,15 @@ def test_pipeline_failure_enqueues_probe(tmp_path):
     )
     box = _toolbox(tmp_path, stream=stream, client=client)
     probe_dir = tmp_path / "probe"
+    # 测试隔离：prefs/pause/stats 走 tmp（防止污染真实运行态文件）
     pipeline = Pipeline(
         box,
         recorder=None,
         faults_dir=tmp_path / "faults",
         probe_dir=probe_dir,
+        prefs_path=tmp_path / "prefs.md",
+        pause_path=tmp_path / "pause.json",
+        stats_path=tmp_path / "stats.json",
     )
     result = pipeline.run("写个爬虫")
 
