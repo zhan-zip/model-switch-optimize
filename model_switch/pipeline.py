@@ -15,6 +15,7 @@ from typing import Any
 from .events import EventType
 from .history import DEFAULT_FAULTS_DIR, FaultRecorder
 from .manager import DecisionError, DecisionManager
+from .prefs import DEFAULT_PREFS_PATH, add_plan_pref
 from .probe import DEFAULT_PROBE_DIR, ProbeQueue
 from .safety import redact
 
@@ -54,11 +55,13 @@ class Pipeline:
         max_switches: int = MAX_SWITCHES,
         probe_queue: ProbeQueue | None = None,
         probe_dir: Any = DEFAULT_PROBE_DIR,
+        prefs_path: Any = DEFAULT_PREFS_PATH,
     ):
         self.toolbox = toolbox
         self.confirm_mode = confirm_mode
         self.max_switches = max_switches
         self.manager = manager
+        self.prefs_path = prefs_path
         self.recorder = recorder or FaultRecorder(toolbox.stream, faults_dir=faults_dir)
         self.probe_queue = probe_queue if probe_queue is not None else ProbeQueue(probe_dir)
 
@@ -70,12 +73,17 @@ class Pipeline:
 
         trace_id = self.toolbox.stream.trace_id if self.toolbox.stream is not None else ""
         self._emit(EventType.PIPELINE_STARTED, {"task": task})
-        mgr = self.manager if self.manager is not None else DecisionManager(self.toolbox)
+        mgr = (
+            self.manager
+            if self.manager is not None
+            else DecisionManager(self.toolbox, prefs_path=self.prefs_path)
+        )
 
         failed: set[str] = set()
         switches = 0
         attempts = 0
         last_error = ""
+        last_switch_error = ""  # 触发最后一次切换的错误类别（切换成功后沉淀偏好）
 
         # 1. 选型（决策全灭 -> 直接机械兜底）
         try:
@@ -89,6 +97,12 @@ class Pipeline:
             attempts += 1
             result = self.toolbox.call_model(current, [{"role": "user", "content": task}])
             if result.ok:
+                # 切换后成功：沉淀切换偏好（同错类下次程序直切；失败不阻断结果返回）
+                if switches > 0 and last_switch_error:
+                    try:
+                        add_plan_pref(last_switch_error, current, self.prefs_path)
+                    except OSError:
+                        pass
                 outcome = OUTCOME_OK if switches == 0 else OUTCOME_SWITCHED
                 return self._finish(
                     RunResult(True, outcome, current, result.text, attempts, "", switches, trace_id)
@@ -109,6 +123,7 @@ class Pipeline:
             )
             current = target
             switches += 1
+            last_switch_error = result.error_class
             self._emit(EventType.SWITCHED_TO, {"to": target})
 
     # -- 机械兜底 -----------------------------------------------------

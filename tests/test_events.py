@@ -72,6 +72,8 @@ def test_to_json_roundtrip():
 
 
 def test_event_type_table_complete():
-    assert len(EventType.ALL) == 26
+    assert len(EventType.ALL) == 28
     assert "mechanical_fallback" in EventType.ALL
     assert "onboarding_labels_saved" in EventType.ALL
+    assert "plan_pref_hit" in EventType.ALL
+    assert "plan_pref_miss" in EventType.ALL

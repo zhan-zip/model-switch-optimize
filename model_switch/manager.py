@@ -19,7 +19,13 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 from .events import EventType
-from .prefs import DEFAULT_PREFS_PATH, add_task_pref, load_prefs, match_task_pref
+from .prefs import (
+    DEFAULT_PREFS_PATH,
+    add_task_pref,
+    load_prefs,
+    match_plan_pref,
+    match_task_pref,
+)
 from .safety import redact
 
 JSON_RE = re.compile(r"\{.*\}", re.S)
@@ -228,14 +234,48 @@ class DecisionManager:
                 add_task_pref(task, str(decision.decision["model"]), self.prefs_path)
         return replace(decision, confirmed=confirmed)
 
-    def plan_recovery(self, failed_ref: str, error_class: str, *, detail: str = "") -> Decision:
-        """故障切换决策：错误类型 + 可用模型 -> 切换目标 + 是否诊断。"""
+    def plan_recovery(
+        self,
+        failed_ref: str,
+        error_class: str,
+        *,
+        detail: str = "",
+        use_plan_pref: bool = True,
+    ) -> Decision:
+        """故障切换决策：错误类型 + 可用模型 -> 切换目标 + 是否诊断。
+
+        切换偏好命中（同错类上次成功切换的目标仍可用）时程序直接切换
+        （decision_model="program"，不调 LLM 省决策成本）；否则走 LLM 决策。
+        偏好沉淀由 pipeline 在切换成功后回写（此处只读）。
+        """
 
         others = [
             status
             for status in self.toolbox.registry.all()
             if str(status.ref) != failed_ref and status.available is not False
         ]
+
+        # 切换偏好命中：程序直接决策（目标必须仍在可用候选集内）
+        if use_plan_pref:
+            hit = match_plan_pref(error_class, path=self.prefs_path)
+            if hit is not None:
+                target, hits = hit
+                if target in {str(status.ref) for status in others}:
+                    self._emit(
+                        EventType.PLAN_PREF_HIT,
+                        {"error_class": error_class, "switch_to": target, "hits": hits},
+                    )
+                    return Decision(
+                        point="plan_recovery",
+                        decision={
+                            "switch_to": target,
+                            "diagnose": True,
+                            "reason": f"切换偏好命中（{hits} 次）：同错类上次成功切换",
+                        },
+                        decision_model="program",
+                    )
+            self._emit(EventType.PLAN_PREF_MISS, {"error_class": error_class})
+
         table = "\n".join(self._status_line(status, {}) for status in others) or "（无）"
         prompt = PLAN_PROMPT.format(
             failed=failed_ref,

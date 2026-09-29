@@ -122,6 +122,7 @@ def build_mcp_server(switcher: ModelSwitcher) -> FastMCP:
                 "switch_to": decision.decision.get("switch_to"),
                 "diagnose": decision.decision.get("diagnose"),
                 "reason": decision.decision.get("reason"),
+                "decision_model": decision.decision_model,  # "program" = 切换偏好命中（未调 LLM）
             }
         )
 

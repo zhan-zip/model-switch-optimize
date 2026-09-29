@@ -25,6 +25,7 @@ from .manager import DecisionManager, DecisionError
 from .mocker import MockConsole, MockDecisionClient, MockWebSearch
 from .model import ModelRegistry
 from .pipeline import Pipeline, RunResult
+from .prefs import DEFAULT_PREFS_PATH
 from .probe import DEFAULT_PROBE_DIR, ProbeQueue, probe_once, probe_watch
 from .tools import Toolbox
 from .websearch import default_web_search
@@ -69,7 +70,16 @@ class ModelSwitcher:
             mock=mock,
         )
         self.manager = DecisionManager(self.toolbox, confirm_handler=confirm_handler)
-        self.pipeline = Pipeline(self.toolbox, manager=self.manager, probe_dir=probe_dir)
+        # mock 演示：切换偏好只写临时文件，不污染真实 config/model_prefs.md
+        if mock:
+            import tempfile
+
+            prefs_path = Path(tempfile.mkdtemp(prefix="mso-mock-prefs-")) / "model_prefs.md"
+        else:
+            prefs_path = DEFAULT_PREFS_PATH
+        self.pipeline = Pipeline(
+            self.toolbox, manager=self.manager, probe_dir=probe_dir, prefs_path=prefs_path
+        )
 
     # -- 闭环 ---------------------------------------------------------
 

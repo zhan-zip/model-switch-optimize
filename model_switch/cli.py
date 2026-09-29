@@ -30,6 +30,7 @@ from .mocker import MockConsole, MockDecisionClient, MockModelClient, MockWebSea
 from .model import ModelRegistry
 from .onboarding import run_onboarding
 from .pipeline import OUTCOME_FALLBACK, OUTCOME_OK, OUTCOME_SWITCHED, Pipeline
+from .prefs import DEFAULT_PREFS_PATH
 from .probe import ProbeQueue, probe_once, probe_watch
 from .tools import Toolbox
 from .websearch import default_web_search
@@ -285,11 +286,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
 
     if args.mock:
-        # mock 演示故障只入临时探测队列，不污染真实运行态（data/probe）
+        # mock 演示故障只入临时探测队列/临时偏好文件，不污染真实运行态（data/probe、config/model_prefs.md）
         probe_queue = ProbeQueue(Path(tempfile.mkdtemp(prefix="mso-mock-probe-")))
+        prefs_path = Path(tempfile.mkdtemp(prefix="mso-mock-prefs-")) / "model_prefs.md"
     else:
         probe_queue = ProbeQueue()
-    pipeline = Pipeline(toolbox, confirm_mode=args.confirm, probe_queue=probe_queue)
+        prefs_path = DEFAULT_PREFS_PATH
+    pipeline = Pipeline(toolbox, confirm_mode=args.confirm, probe_queue=probe_queue, prefs_path=prefs_path)
     result = pipeline.run(args.task)
 
     diagnosis: list[dict[str, Any]] = []

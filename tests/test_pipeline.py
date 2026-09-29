@@ -8,6 +8,7 @@ from model_switch.history import FaultRecorder
 from model_switch.mocker import MockConsole, MockDecisionClient, MockModelClient
 from model_switch.model import ModelRegistry
 from model_switch.pipeline import Pipeline
+from model_switch.prefs import load_prefs, save_prefs
 from model_switch.tools import Toolbox
 
 from conftest import SequenceClient
@@ -48,7 +49,6 @@ def _pipeline(box, tmp_path, **kwargs):
         probe_dir=tmp_path / "probe",
         **kwargs,
     )
-
 
 def test_run_success_first_try(tmp_path):
     stream = EventStream()
@@ -235,3 +235,98 @@ def test_run_restores_from_probe_queue(tmp_path):
     assert pipeline.toolbox.registry.find("a/g1/m1").available is False
     assert pipeline.toolbox.registry.find("a/g1/m2").available is False
     assert pipeline.toolbox.registry.find("b/g1/m3").available is None
+
+
+# -- 切换偏好（plan_prefs）闭环 -----------------------------------------
+
+
+def test_run_llm_switch_success_saves_plan_pref(tmp_path):
+    """首次故障：LLM 决策切换成功后沉淀切换偏好。"""
+    stream = EventStream()
+    prefs_path = tmp_path / "prefs.md"
+    client = MockDecisionClient(
+        default_model="a/g1/m1", switch_to="a/g1/m2", fail_models={"m1": "401"}
+    )
+    box = _toolbox(tmp_path, stream=stream, client=client)
+    pipeline = Pipeline(
+        box,
+        recorder=FaultRecorder(None, faults_dir=tmp_path / "faults"),
+        probe_dir=tmp_path / "probe",
+        prefs_path=prefs_path,
+    )
+
+    result = pipeline.run("写个爬虫")
+
+    assert result.ok is True
+    assert result.model_ref == "a/g1/m2"
+    assert result.switches == 1
+    # 沉淀：401 -> a/g1/m2（LLM 决策切换成功）
+    assert load_prefs(prefs_path)["plan_prefs"]["401"] == ("a/g1/m2", 1)
+
+
+def test_run_pref_hit_second_time_program_switch(tmp_path):
+    """同错类第二次故障：切换偏好命中，程序直接切换（零 LLM 切换决策调用）。"""
+    stream = EventStream()
+    prefs_path = tmp_path / "prefs.md"
+    save_prefs(
+        {"model_labels": {}, "task_prefs": {}, "plan_prefs": {"401": ("a/g1/m2", 1)}}, prefs_path
+    )
+    client = MockDecisionClient(default_model="a/g1/m1", fail_models={"m1": "401"})
+    box = _toolbox(tmp_path, stream=stream, client=client)
+    pipeline = Pipeline(
+        box,
+        recorder=FaultRecorder(None, faults_dir=tmp_path / "faults"),
+        probe_dir=tmp_path / "probe",
+        prefs_path=prefs_path,
+    )
+
+    result = pipeline.run("写个爬虫")
+
+    assert result.ok is True
+    assert result.model_ref == "a/g1/m2"  # 偏好目标
+    assert result.switches == 1
+    # 切换决策零 LLM 调用（只发生了选型决策一次）
+    plan_calls = [
+        c for c in client.calls if "故障切换决策者" in c["messages"][-1]["content"]
+    ]
+    assert len(plan_calls) == 0
+    types = [e.type for e in stream]
+    assert EventType.PLAN_PREF_HIT in types
+    # 命中后成功：命中次数累计
+    assert load_prefs(prefs_path)["plan_prefs"]["401"] == ("a/g1/m2", 2)
+
+
+def test_run_pref_hit_target_fails_then_llm_corrects(tmp_path):
+    """偏好目标也故障：不命中（目标 available=False），走 LLM 修正并更新偏好。"""
+    stream = EventStream()
+    prefs_path = tmp_path / "prefs.md"
+    save_prefs(
+        {"model_labels": {}, "task_prefs": {}, "plan_prefs": {"401": ("a/g1/m2", 1)}}, prefs_path
+    )
+    client = MockDecisionClient(
+        default_model="a/g1/m1",
+        switch_to="b/g1/m3",
+        fail_models={"m1": "401", "m2": "401"},  # 偏好目标 m2 同错类再故障
+    )
+    box = _toolbox(tmp_path, stream=stream, client=client)
+    pipeline = Pipeline(
+        box,
+        recorder=FaultRecorder(None, faults_dir=tmp_path / "faults"),
+        probe_dir=tmp_path / "probe",
+        prefs_path=prefs_path,
+    )
+
+    result = pipeline.run("写个爬虫")
+
+    assert result.ok is True
+    assert result.model_ref == "b/g1/m3"  # LLM 修正切到保底
+    assert result.switches == 2
+    plan_calls = [
+        c for c in client.calls if "故障切换决策者" in c["messages"][-1]["content"]
+    ]
+    assert len(plan_calls) == 1  # 仅 m2 失败后走了一次 LLM 切换决策
+    types = [e.type for e in stream]
+    assert EventType.PLAN_PREF_HIT in types  # 第一次命中（m1 401）
+    assert EventType.PLAN_PREF_MISS in types  # 第二次未命中（m2 已不可用）
+    # 偏好更新：401 -> b/g1/m3（换目标重置为 1）
+    assert load_prefs(prefs_path)["plan_prefs"]["401"] == ("b/g1/m3", 1)

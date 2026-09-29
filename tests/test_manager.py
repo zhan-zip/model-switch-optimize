@@ -10,7 +10,6 @@ from model_switch.manager import DecisionError, DecisionManager, extract_json
 from model_switch.model import ModelRegistry
 from model_switch.prefs import load_prefs, save_prefs
 from model_switch.tools import Toolbox
-
 from conftest import SequenceClient
 
 VALID_YAML = """\
@@ -237,3 +236,70 @@ def test_conclude_diagnosis_rejects_empty_actions(tmp_path):
     mgr = DecisionManager(box, prefs_path=tmp_path / "p.md")
     decision = mgr.conclude_diagnosis({"facts": {}})
     assert decision.decision["actions"] == ["充值"]
+
+
+# -- plan_recovery 切换偏好（plan_prefs）------------------------------
+
+
+def test_plan_recovery_pref_hit_program_decision(tmp_path):
+    """切换偏好命中且目标可用：程序直接决策，不调 LLM。"""
+    stream = EventStream()
+    prefs_path = tmp_path / "prefs.md"
+    save_prefs(
+        {"model_labels": {}, "task_prefs": {}, "plan_prefs": {"429": ("a/g1/m2", 2)}}, prefs_path
+    )
+    client = SequenceClient()  # program 命中不应发起任何 LLM 调用
+    box = _toolbox(tmp_path, client, stream)
+    mgr = DecisionManager(box, prefs_path=prefs_path)
+    decision = mgr.plan_recovery("a/g1/m1", "429")
+    assert decision.point == "plan_recovery"
+    assert decision.decision_model == "program"
+    assert decision.decision["switch_to"] == "a/g1/m2"
+    assert len(client.calls) == 0
+    types = [e.type for e in stream]
+    assert EventType.PLAN_PREF_HIT in types
+    assert EventType.PLAN_PREF_MISS not in types
+    assert EventType.DECISION_REQUESTED not in types  # 未走 LLM 决策通道
+
+
+def test_plan_recovery_pref_hit_target_unavailable_falls_to_llm(tmp_path):
+    """命中但目标已不可用（available=False）：按未命中走 LLM。"""
+    stream = EventStream()
+    prefs_path = tmp_path / "prefs.md"
+    save_prefs(
+        {"model_labels": {}, "task_prefs": {}, "plan_prefs": {"429": ("a/g1/m2", 2)}}, prefs_path
+    )
+    client = SequenceClient(
+        [json.dumps({"switch_to": "b/g1/m3", "diagnose": False, "reason": "换一个"})]
+    )
+    box = _toolbox(tmp_path, client, stream)
+    box.registry.update("a/g1/m2", available=False)  # 偏好目标已故障
+    mgr = DecisionManager(box, prefs_path=prefs_path)
+    decision = mgr.plan_recovery("a/g1/m1", "429")
+    assert decision.decision_model == "b/g1/m3"  # 保底担任决策者
+    assert decision.decision["switch_to"] == "b/g1/m3"
+    types = [e.type for e in stream]
+    assert EventType.PLAN_PREF_MISS in types
+    assert EventType.PLAN_PREF_HIT not in types
+
+
+def test_plan_recovery_pref_disabled_by_flag(tmp_path):
+    """use_plan_pref=False：旁路偏好机制，直接走 LLM。"""
+    stream = EventStream()
+    prefs_path = tmp_path / "prefs.md"
+    save_prefs(
+        {"model_labels": {}, "task_prefs": {}, "plan_prefs": {"429": ("a/g1/m2", 2)}}, prefs_path
+    )
+    client = SequenceClient(
+        [json.dumps({"switch_to": "b/g1/m3", "diagnose": False, "reason": "正常决策"})]
+    )
+    box = _toolbox(tmp_path, client, stream)
+    mgr = DecisionManager(box, prefs_path=prefs_path)
+    decision = mgr.plan_recovery("a/g1/m1", "429", use_plan_pref=False)
+    assert decision.decision_model == "b/g1/m3"
+    assert decision.decision["switch_to"] == "b/g1/m3"
+    assert len(client.calls) == 1
+    # 旁路时不发命中/未命中事件
+    types = [e.type for e in stream]
+    assert EventType.PLAN_PREF_HIT not in types
+    assert EventType.PLAN_PREF_MISS not in types
