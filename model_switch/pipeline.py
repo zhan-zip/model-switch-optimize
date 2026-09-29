@@ -19,6 +19,7 @@ from .model import DEFAULT_PAUSE_PATH, load_pause_state, prune_pause_state, rest
 from .prefs import DEFAULT_PREFS_PATH, add_plan_pref
 from .probe import DEFAULT_PROBE_DIR, ProbeQueue
 from .safety import redact
+from .stats import DEFAULT_STATS_PATH, record_run
 
 MAX_SWITCHES = 5
 
@@ -58,6 +59,7 @@ class Pipeline:
         probe_dir: Any = DEFAULT_PROBE_DIR,
         prefs_path: Any = DEFAULT_PREFS_PATH,
         pause_path: Any = DEFAULT_PAUSE_PATH,
+        stats_path: Any = DEFAULT_STATS_PATH,
     ):
         self.toolbox = toolbox
         self.confirm_mode = confirm_mode
@@ -65,6 +67,7 @@ class Pipeline:
         self.manager = manager
         self.prefs_path = prefs_path
         self.pause_path = pause_path
+        self.stats_path = stats_path
         self.recorder = recorder or FaultRecorder(toolbox.stream, faults_dir=faults_dir)
         self.probe_queue = probe_queue if probe_queue is not None else ProbeQueue(probe_dir)
 
@@ -80,7 +83,9 @@ class Pipeline:
         mgr = (
             self.manager
             if self.manager is not None
-            else DecisionManager(self.toolbox, prefs_path=self.prefs_path)
+            else DecisionManager(
+                self.toolbox, prefs_path=self.prefs_path, stats_path=self.stats_path
+            )
         )
 
         failed: set[str] = set()
@@ -100,6 +105,7 @@ class Pipeline:
         while True:
             attempts += 1
             result = self.toolbox.call_model(current, [{"role": "user", "content": task}])
+            self._record_stats(current, result.ok, result.latency_ms, switches)
             if result.ok:
                 # 切换后成功：沉淀切换偏好（同错类下次程序直切；失败不阻断结果返回）
                 if switches > 0 and last_switch_error:
@@ -160,6 +166,7 @@ class Pipeline:
         for ref in candidates:
             attempts += 1
             call = self.toolbox.call_model(ref, [{"role": "user", "content": task}])
+            self._record_stats(ref, call.ok, call.latency_ms, switches)
             results[ref] = {"ok": call.ok, "error_class": "" if call.ok else call.error_class}
             if call.ok:
                 self._emit(
@@ -226,6 +233,14 @@ class Pipeline:
             EventType.MODEL_PAUSED,
             {"model_ref": model_ref, "seconds": seconds, "reason": reason},
         )
+
+    def _record_stats(self, model_ref: str, ok: bool, latency_ms: int, switches: int) -> None:
+        """记录一次模型调用结果（滚动窗口经验分）；写盘失败不阻断主流程。"""
+
+        try:
+            record_run(model_ref, ok, latency_ms, switches, self.stats_path)
+        except OSError:
+            pass
 
     def _on_fault(self, model_ref: str, error_class: str, detail: str, task: str) -> None:
         """故障入档 + 登记探测队列（恢复探测走 mso probe / --watch）。"""

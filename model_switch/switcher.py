@@ -28,6 +28,7 @@ from .pipeline import Pipeline, RunResult
 from .model import DEFAULT_PAUSE_PATH
 from .prefs import DEFAULT_PREFS_PATH
 from .probe import DEFAULT_PROBE_DIR, ProbeQueue, probe_once, probe_watch
+from .stats import DEFAULT_STATS_PATH
 from .tools import Toolbox
 from .websearch import default_web_search
 
@@ -71,21 +72,24 @@ class ModelSwitcher:
             mock=mock,
         )
         self.manager = DecisionManager(self.toolbox, confirm_handler=confirm_handler)
-        # mock 演示：切换偏好/暂停表只写临时文件，不污染真实 config/model_prefs.md、data/pause.json
+        # mock 演示：切换偏好/暂停表/统计只写临时文件，不污染真实运行态
         if mock:
             import tempfile
 
             prefs_path = Path(tempfile.mkdtemp(prefix="mso-mock-prefs-")) / "model_prefs.md"
             pause_path = Path(tempfile.mkdtemp(prefix="mso-mock-pause-")) / "pause.json"
+            stats_path = Path(tempfile.mkdtemp(prefix="mso-mock-stats-")) / "stats.json"
         else:
             prefs_path = DEFAULT_PREFS_PATH
             pause_path = DEFAULT_PAUSE_PATH
+            stats_path = DEFAULT_STATS_PATH
         self.pipeline = Pipeline(
             self.toolbox,
             manager=self.manager,
             probe_dir=probe_dir,
             prefs_path=prefs_path,
             pause_path=pause_path,
+            stats_path=stats_path,
         )
 
     # -- 闭环 ---------------------------------------------------------

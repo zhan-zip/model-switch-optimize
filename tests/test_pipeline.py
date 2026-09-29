@@ -412,3 +412,55 @@ def test_run_restores_pause_state(tmp_path):
     # m1 恢复暂停态被兜底跳过；m2 过期暂停被清扫、可兜底
     assert result.model_ref == "a/g1/m2"
     assert load_pause_state(pause_path) == {"a/g1/m1": future}  # 过期条目已清扫
+
+
+# -- run 统计（阶段6 增强项 ③ stats）-------------------------------------
+
+
+def test_run_records_stats_per_model(tmp_path):
+    """run 闭环每次模型调用记录统计（成功与失败都记，滚动窗口）。"""
+    from model_switch.stats import load_stats, summary
+
+    stats_path = tmp_path / "stats.json"
+    client = MockDecisionClient(
+        default_model="a/g1/m1", switch_to="a/g1/m2", fail_models={"m1": "401"}
+    )
+    box = _toolbox(tmp_path, stream=EventStream(), client=client)
+    pipeline = Pipeline(
+        box,
+        recorder=FaultRecorder(None, faults_dir=tmp_path / "faults"),
+        probe_dir=tmp_path / "probe",
+        prefs_path=tmp_path / "prefs.md",
+        pause_path=tmp_path / "pause.json",
+        stats_path=stats_path,
+    )
+    pipeline.run("写个爬虫")  # m1 失败 401 -> 切 m2 成功
+
+    stats = load_stats(stats_path)
+    assert stats["a/g1/m1"]["recent"] == [[False, 42, 0]]  # 失败调用也记录
+    assert stats["a/g1/m2"]["recent"] == [[True, 42, 1]]  # 成功 + 切换数 1
+    # 单次样本：summary 门槛内返回 None
+    assert summary("a/g1/m1", stats=stats) is None
+    assert summary("a/g1/m2", stats=stats) is None
+
+
+def test_run_mechanical_records_stats(tmp_path):
+    """机械兜底路径的调用同样记录统计（决策调用不记——stats 语义=任务执行经验）。"""
+    from model_switch.stats import load_stats
+
+    stats_path = tmp_path / "stats.json"
+    client = MockModelClient(rules={"m3": "401"})  # 决策全灭 -> 机械兜底
+    box = _toolbox(tmp_path, stream=EventStream(), client=client)
+    pipeline = Pipeline(
+        box,
+        recorder=FaultRecorder(None, faults_dir=tmp_path / "faults"),
+        probe_dir=tmp_path / "probe",
+        prefs_path=tmp_path / "prefs.md",
+        pause_path=tmp_path / "pause.json",
+        stats_path=stats_path,
+    )
+    pipeline.run("任务")  # 兜底：m3 决策调用失败（不记）-> m1 兜底成功（记）
+
+    stats = load_stats(stats_path)
+    assert stats["a/g1/m1"]["recent"][0][0] is True  # 兜底成功记 m1
+    assert "b/g1/m3" not in stats  # 决策调用不记（非任务执行）

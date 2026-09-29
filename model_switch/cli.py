@@ -32,6 +32,7 @@ from .onboarding import run_onboarding
 from .pipeline import OUTCOME_FALLBACK, OUTCOME_OK, OUTCOME_SWITCHED, Pipeline
 from .prefs import DEFAULT_PREFS_PATH
 from .probe import ProbeQueue, probe_once, probe_watch
+from .stats import DEFAULT_STATS_PATH, all_summaries
 from .tools import Toolbox
 from .websearch import default_web_search
 
@@ -108,6 +109,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_resume = sub.add_parser("resume", help="解除指定模型暂停")
     p_resume.add_argument("model_ref", help="服务商/分组/模型名")
     p_resume.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
+
+    p_stats = sub.add_parser("stats", help="查看 run 统计（各模型近 20 次成功率/耗时，样本不足不显示）")
+    p_stats.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
 
     p_mcp = sub.add_parser("mcp", help="启动 MCP server（stdio，供 MCP 宿主零代码接入）")
     p_mcp.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
@@ -299,21 +303,24 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
 
     if args.mock:
-        # mock 演示故障只入临时探测队列/临时偏好/临时暂停表，不污染真实运行态
-        # （data/probe、config/model_prefs.md、data/pause.json）
+        # mock 演示故障只入临时探测队列/临时偏好/临时暂停表/临时统计，不污染真实运行态
+        # （data/probe、config/model_prefs.md、data/pause.json、data/stats.json）
         probe_queue = ProbeQueue(Path(tempfile.mkdtemp(prefix="mso-mock-probe-")))
         prefs_path = Path(tempfile.mkdtemp(prefix="mso-mock-prefs-")) / "model_prefs.md"
         pause_path = Path(tempfile.mkdtemp(prefix="mso-mock-pause-")) / "pause.json"
+        stats_path = Path(tempfile.mkdtemp(prefix="mso-mock-stats-")) / "stats.json"
     else:
         probe_queue = ProbeQueue()
         prefs_path = DEFAULT_PREFS_PATH
         pause_path = DEFAULT_PAUSE_PATH
+        stats_path = DEFAULT_STATS_PATH
     pipeline = Pipeline(
         toolbox,
         confirm_mode=args.confirm,
         probe_queue=probe_queue,
         prefs_path=prefs_path,
         pause_path=pause_path,
+        stats_path=stats_path,
     )
     result = pipeline.run(args.task)
 
@@ -608,6 +615,30 @@ def cmd_resume(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_stats(args: argparse.Namespace) -> int:
+    try:
+        config = load_config(args.config)
+    except ConfigError as exc:
+        print(f"加载失败：{exc}")
+        return 1
+    from .stats import load_stats
+
+    stats = load_stats()
+    rows = all_summaries([str(ref) for ref in config.iter_model_refs()], stats=stats)
+    if not any(rows.values()):
+        print("暂无统计数据（run 若干次后生成；样本不足 3 次不显示）")
+        return 0
+    print("run 统计（近 20 次滚动窗口，选型时注入决策参考）：")
+    for ref, exp in rows.items():
+        if exp is None:
+            print(f"  {ref}  样本不足（<3 次）")
+        else:
+            print(
+                f"  {ref}  近{exp['n']}次 · 成功率 {exp['rate']}% · 成功均耗时 {exp['avg_latency_ms']}ms"
+            )
+    return 0
+
+
 def cmd_init_check(args: argparse.Namespace) -> int:
     try:
         config = load_config(args.config)
@@ -696,6 +727,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_pause(args)
     if args.command == "resume":
         return cmd_resume(args)
+    if args.command == "stats":
+        return cmd_stats(args)
     if args.command == "mcp":
         from .mcp import serve
 

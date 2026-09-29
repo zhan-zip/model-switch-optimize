@@ -363,3 +363,40 @@ def test_plan_recovery_pause_seconds_validation(tmp_path):
     decision = mgr.plan_recovery("a/g1/m1", "429")
     assert decision.decision["pause_seconds"] == 60
     assert len(client.calls) == 4  # 三次被拒反馈重试 + 第四次通过
+
+
+# -- 选型经验分注入（阶段6 增强项 ③ stats）-------------------------------
+
+
+def test_choose_model_prompt_contains_stats_experience(tmp_path):
+    """样本足够的模型，选型 prompt 注入经验列；样本不足不注入。"""
+    from model_switch.stats import record_run
+
+    stats_path = tmp_path / "stats.json"
+    for _ in range(4):
+        record_run("a/g1/m1", True, 421, 0, stats_path)  # m1 样本足
+    record_run("a/g1/m2", True, 50, 0, stats_path)  # m2 样本不足
+
+    client = SequenceClient([_choose_json()])
+    box = _toolbox(tmp_path, client)
+    mgr = DecisionManager(box, prefs_path=tmp_path / "p.md", stats_path=stats_path)
+    mgr.choose_model("任务")
+    content = client.calls[0]["messages"][0]["content"]
+    # m1 行带经验列
+    assert "经验: 近4次 成功率100% 均耗时421ms" in content
+    # m2 样本不足：无经验列（该行仍列出）
+    assert "经验: 近1次" not in content
+
+
+def test_plan_recovery_pref_hit_prompt_without_stats(tmp_path):
+    """偏好命中走程序决策：不发 prompt（经验列不影响 program 路径）。"""
+    prefs_path = tmp_path / "prefs.md"
+    save_prefs(
+        {"model_labels": {}, "task_prefs": {}, "plan_prefs": {"429": ("a/g1/m2", 1)}}, prefs_path
+    )
+    client = SequenceClient()
+    box = _toolbox(tmp_path, client)
+    mgr = DecisionManager(box, prefs_path=prefs_path, stats_path=tmp_path / "stats.json")
+    decision = mgr.plan_recovery("a/g1/m1", "429")
+    assert decision.decision_model == "program"
+    assert len(client.calls) == 0

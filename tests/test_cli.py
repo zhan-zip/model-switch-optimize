@@ -395,3 +395,29 @@ def test_run_mock_writes_no_real_pause_state(workspace, capsys):
     assert main(["run", "写个爬虫", "--mock"]) == 0
     # mock 演示冷却只写临时暂停表，不写真实 data/pause.json
     assert not (workspace / "data" / "pause.json").exists()
+
+
+def test_stats_empty_then_with_data(workspace, capsys):
+    from model_switch.stats import record_run
+
+    main(["init"])
+    capsys.readouterr()
+    assert main(["stats"]) == 0
+    assert "暂无统计数据" in capsys.readouterr().out
+
+    # 预置 3 次成功记录（真实 stats 路径，相对 workspace）
+    for _ in range(3):
+        record_run("provider-a/default/gpt-4o", True, 123, 0)
+    assert main(["stats"]) == 0
+    out = capsys.readouterr().out
+    assert "provider-a/default/gpt-4o" in out
+    assert "成功率 100%" in out
+    assert "均耗时 123ms" in out
+
+
+def test_run_mock_writes_no_real_stats(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    assert main(["run", "写个爬虫", "--mock"]) == 0
+    # mock 演示统计只写临时文件，不写真实 data/stats.json
+    assert not (workspace / "data" / "stats.json").exists()

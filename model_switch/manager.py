@@ -27,6 +27,7 @@ from .prefs import (
     match_task_pref,
 )
 from .safety import redact
+from .stats import DEFAULT_STATS_PATH, load_stats, summary
 
 JSON_RE = re.compile(r"\{.*\}", re.S)
 
@@ -96,11 +97,13 @@ class DecisionManager:
         confirm_handler: ConfirmHandler | None = None,
         max_retries: int = 1,
         prefs_path: Any = DEFAULT_PREFS_PATH,
+        stats_path: Any = DEFAULT_STATS_PATH,
     ):
         self.toolbox = toolbox
         self.confirm_handler = confirm_handler
         self.max_retries = max_retries
         self.prefs_path = prefs_path
+        self.stats_path = stats_path
 
     # -- 决策者选定 ---------------------------------------------------
 
@@ -351,8 +354,21 @@ class DecisionManager:
     # -- 上下文组装 ---------------------------------------------------
 
     def _model_table(self, prefs: dict[str, dict[str, str]]) -> str:
+        """选型模型表：状态/标签/延迟 + 经验分（样本不足不显示，阶段6 增强项 ③）。"""
+
         labels = prefs.get("model_labels", {})
-        return "\n".join(self._status_line(status, labels) for status in self.toolbox.registry.all())
+        try:
+            stats = load_stats(self.stats_path)
+        except OSError:
+            stats = {}
+        lines: list[str] = []
+        for status in self.toolbox.registry.all():
+            line = self._status_line(status, labels)
+            exp = summary(str(status.ref), stats=stats)
+            if exp is not None:
+                line += f" | 经验: 近{exp['n']}次 成功率{exp['rate']}% 均耗时{exp['avg_latency_ms']}ms"
+            lines.append(line)
+        return "\n".join(lines)
 
     def _status_line(self, status: Any, labels: dict[str, str]) -> str:
         label = labels.get(str(status.ref), "-")

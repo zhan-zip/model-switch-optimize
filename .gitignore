@@ -13,6 +13,8 @@ data/auth/*
 data/faults/*
 data/events/*
 data/probe/*
+data/pause.json
+data/stats.json
 !data/**/.gitkeep
 
 # docs/ 与本地敏感资料整体不入库（设计文档 / 测试记录 / 交接文档 / 真实 key 资料）
