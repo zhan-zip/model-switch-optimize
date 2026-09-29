@@ -27,7 +27,7 @@ from .diagnose import run_diagnose
 from .events import EventStream, EventType
 from .manager import DecisionError
 from .mocker import MockConsole, MockDecisionClient, MockModelClient, MockWebSearch
-from .model import ModelRegistry
+from .model import DEFAULT_PAUSE_PATH, ModelRegistry, restore_pause_state
 from .onboarding import run_onboarding
 from .pipeline import OUTCOME_FALLBACK, OUTCOME_OK, OUTCOME_SWITCHED, Pipeline
 from .prefs import DEFAULT_PREFS_PATH
@@ -99,6 +99,15 @@ def build_parser() -> argparse.ArgumentParser:
     a_list = auth_sub.add_parser("list", help="列出已存账号（掩码显示）")
     a_remove = auth_sub.add_parser("remove", help="删除服务商账号")
     a_remove.add_argument("provider", help="服务商名称")
+
+    p_pause = sub.add_parser("pause", help="暂停指定模型（冷却：选型/切换/兜底/决策者跳过）")
+    p_pause.add_argument("model_ref", help="服务商/分组/模型名")
+    p_pause.add_argument("seconds", type=int, nargs="?", default=300, help="暂停秒数（默认 300，上限 86400）")
+    p_pause.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
+
+    p_resume = sub.add_parser("resume", help="解除指定模型暂停")
+    p_resume.add_argument("model_ref", help="服务商/分组/模型名")
+    p_resume.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
 
     p_mcp = sub.add_parser("mcp", help="启动 MCP server（stdio，供 MCP 宿主零代码接入）")
     p_mcp.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
@@ -195,6 +204,8 @@ def cmd_tools(args: argparse.Namespace) -> int:
         return 1
 
     registry = ModelRegistry(config)
+    if not args.mock:
+        restore_pause_state(registry)  # 显示持久暂停状态（data/pause.json）
     if args.mock:
         stream = EventStream()
         toolbox = Toolbox(
@@ -236,6 +247,8 @@ def cmd_tools(args: argparse.Namespace) -> int:
     print(f"模型清单（{len(models)} 个）：")
     for i, m in enumerate(models, 1):
         state = {True: "可用", False: "不可用", None: "未测"}[m["available"]]
+        if m.get("paused"):
+            state += "，暂停中（冷却）"
         key_state = "key 已设置" if "****" in str(m["key_status"]) else "key 未设置"
         print(f"  {i}. {m['model_ref']}  [{key_state}]  状态: {state}")
         if m["last_error_class"]:
@@ -286,13 +299,22 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
 
     if args.mock:
-        # mock 演示故障只入临时探测队列/临时偏好文件，不污染真实运行态（data/probe、config/model_prefs.md）
+        # mock 演示故障只入临时探测队列/临时偏好/临时暂停表，不污染真实运行态
+        # （data/probe、config/model_prefs.md、data/pause.json）
         probe_queue = ProbeQueue(Path(tempfile.mkdtemp(prefix="mso-mock-probe-")))
         prefs_path = Path(tempfile.mkdtemp(prefix="mso-mock-prefs-")) / "model_prefs.md"
+        pause_path = Path(tempfile.mkdtemp(prefix="mso-mock-pause-")) / "pause.json"
     else:
         probe_queue = ProbeQueue()
         prefs_path = DEFAULT_PREFS_PATH
-    pipeline = Pipeline(toolbox, confirm_mode=args.confirm, probe_queue=probe_queue, prefs_path=prefs_path)
+        pause_path = DEFAULT_PAUSE_PATH
+    pipeline = Pipeline(
+        toolbox,
+        confirm_mode=args.confirm,
+        probe_queue=probe_queue,
+        prefs_path=prefs_path,
+        pause_path=pause_path,
+    )
     result = pipeline.run(args.task)
 
     diagnosis: list[dict[str, Any]] = []
@@ -431,6 +453,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
                 mock=True,
             )
         else:
+            restore_pause_state(registry)  # 暂停中（冷却）的模型跳过本轮探测
             toolbox = Toolbox(config, registry, stream, web_search_impl=default_web_search)
     except ConfigError as exc:
         _print_line(args.json, {"ok": False, "errors": [f"加载失败：{exc}"]})
@@ -541,6 +564,50 @@ def cmd_auth(args: argparse.Namespace) -> int:
     return 0
 
 
+# -- pause / resume 命令（阶段6 增强项 ① PAUSE） -----------------------------
+
+
+def cmd_pause(args: argparse.Namespace) -> int:
+    try:
+        config = load_config(args.config)
+    except ConfigError as exc:
+        print(f"加载失败：{exc}")
+        return 1
+    if not 1 <= args.seconds <= 86400:
+        print("seconds 须为 1~86400（秒）")
+        return 1
+    registry = ModelRegistry(config)
+    status = registry.find(args.model_ref)
+    if status is None:
+        print(f"未知模型：{args.model_ref}（mso tools 查看清单）")
+        return 1
+    from .model import load_pause_state, prune_pause_state, save_pause_state
+
+    pauses = prune_pause_state(load_pause_state())
+    status.pause(args.seconds)
+    if status.paused_until:
+        pauses[args.model_ref] = status.paused_until
+    save_pause_state(pauses)
+    print(
+        f"已暂停 {args.model_ref}：{args.seconds}s 后自动恢复（data/pause.json 持久；"
+        "期间选型/切换/机械兜底/决策者均跳过）"
+    )
+    return 0
+
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    from .model import load_pause_state, prune_pause_state, save_pause_state
+
+    pauses = prune_pause_state(load_pause_state())
+    if args.model_ref in pauses:
+        del pauses[args.model_ref]
+        save_pause_state(pauses)
+        print(f"已解除暂停：{args.model_ref}")
+        return 0
+    print(f"{args.model_ref} 未在暂停中（或已到期自动解除）")
+    return 1
+
+
 def cmd_init_check(args: argparse.Namespace) -> int:
     try:
         config = load_config(args.config)
@@ -625,6 +692,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_probe(args)
     if args.command == "auth":
         return cmd_auth(args)
+    if args.command == "pause":
+        return cmd_pause(args)
+    if args.command == "resume":
+        return cmd_resume(args)
     if args.command == "mcp":
         from .mcp import serve
 

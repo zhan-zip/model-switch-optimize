@@ -353,3 +353,45 @@ def test_auth_list_and_remove(workspace, capsys, monkeypatch):
 def test_auth_list_empty(workspace, capsys):
     assert main(["auth", "list"]) == 0
     assert "暂无账号" in capsys.readouterr().out
+
+
+# -- pause / resume 命令（阶段6 增强项 ① PAUSE） ---------------------------
+
+
+def test_pause_then_resume_persists(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    ref = "provider-a/default/gpt-4o"
+    assert main(["pause", ref]) == 0  # 默认 300s
+    assert "已暂停" in capsys.readouterr().out
+    path = workspace / "data" / "pause.json"
+    assert ref in json.loads(path.read_text(encoding="utf-8"))
+
+    assert main(["resume", ref]) == 0
+    assert ref not in json.loads(path.read_text(encoding="utf-8"))
+    assert main(["resume", ref]) == 1  # 未在暂停中
+
+
+def test_pause_seconds_bounds_and_unknown_model(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    assert main(["pause", "provider-a/default/gpt-4o", "0"]) == 1  # 下界
+    assert main(["pause", "provider-a/default/gpt-4o", "99999"]) == 1  # 上界
+    assert main(["pause", "x/y/z"]) == 1  # 未知模型
+
+
+def test_tools_shows_paused_state(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    main(["pause", "provider-a/default/gpt-4o", "300"])
+    capsys.readouterr()
+    assert main(["tools"]) == 0
+    assert "暂停中（冷却）" in capsys.readouterr().out
+
+
+def test_run_mock_writes_no_real_pause_state(workspace, capsys):
+    main(["init"])
+    capsys.readouterr()
+    assert main(["run", "写个爬虫", "--mock"]) == 0
+    # mock 演示冷却只写临时暂停表，不写真实 data/pause.json
+    assert not (workspace / "data" / "pause.json").exists()

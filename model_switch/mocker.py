@@ -111,11 +111,13 @@ class MockDecisionClient:
         switch_to: str = "",
         fail_models: dict[str, str] | None = None,
         labels: dict[str, str] | None = None,
+        pause_seconds: int = 0,
     ):
         self.default_model = default_model
         self.switch_to = switch_to
         self.fail_models = dict(fail_models or {})
         self.labels = dict(labels or {})
+        self.pause_seconds = pause_seconds
         self.calls: list[dict[str, Any]] = []
 
     def __call__(
@@ -161,10 +163,14 @@ class MockDecisionClient:
                 ensure_ascii=False,
             )
         if "故障切换决策者" in content:
-            return json.dumps(
-                {"switch_to": self.switch_to, "diagnose": False, "reason": "[mock] 立即切换顶上"},
-                ensure_ascii=False,
-            )
+            plan = {
+                "switch_to": self.switch_to,
+                "diagnose": False,
+                "reason": "[mock] 立即切换顶上",
+            }
+            if self.pause_seconds:
+                plan["pause_seconds"] = self.pause_seconds  # 演示失败模型冷却
+            return json.dumps(plan, ensure_ascii=False)
         if "画像生成者" in content:
             labels = self.labels or {
                 ref: "mock标签、演示用" for ref in _refs_from_profile_prompt(content)

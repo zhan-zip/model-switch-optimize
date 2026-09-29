@@ -330,3 +330,85 @@ def test_run_pref_hit_target_fails_then_llm_corrects(tmp_path):
     assert EventType.PLAN_PREF_MISS in types  # 第二次未命中（m2 已不可用）
     # 偏好更新：401 -> b/g1/m3（换目标重置为 1）
     assert load_prefs(prefs_path)["plan_prefs"]["401"] == ("b/g1/m3", 1)
+
+
+# -- 暂停（冷却）闭环 ---------------------------------------------------
+
+
+def test_run_applies_pause_seconds_and_persists(tmp_path):
+    """决策返回 pause_seconds：失败模型被暂停（事件 + 持久 pause.json）。"""
+    stream = EventStream()
+    pause_path = tmp_path / "pause.json"
+    choose_m1 = json.dumps({"model": "a/g1/m1", "reason": "合适"})
+    switch_m2 = json.dumps(
+        {"switch_to": "a/g1/m2", "diagnose": False, "pause_seconds": 60, "reason": "顶上"}
+    )
+    switch_m3 = json.dumps(
+        {"switch_to": "b/g1/m3", "diagnose": False, "pause_seconds": 60, "reason": "再顶"}
+    )
+    fail_429 = CallResult(ok=False, model="x", error_class="429", detail="rate limited")
+    # 调用序列：选型 -> m1 任务(429) -> 切换决策(m2, 冷却 m1) -> m2 任务(429)
+    #          -> 切换决策(m3, 冷却 m2) -> m3 任务成功
+    client = SequenceClient([choose_m1, fail_429, switch_m2, fail_429, switch_m3])
+    box = _toolbox(tmp_path, stream=stream, client=client)
+    pipeline = Pipeline(
+        box,
+        recorder=FaultRecorder(None, faults_dir=tmp_path / "faults"),
+        probe_dir=tmp_path / "probe",
+        prefs_path=tmp_path / "prefs.md",
+        pause_path=pause_path,
+    )
+    result = pipeline.run("任务")
+
+    assert result.ok is True
+    assert result.model_ref == "b/g1/m3"
+    assert result.switches == 2
+    types = [e.type for e in stream]
+    assert types.count(EventType.MODEL_PAUSED) == 2  # m1 与 m2 均被冷却
+    from model_switch.model import load_pause_state
+
+    assert set(load_pause_state(pause_path)) == {"a/g1/m1", "a/g1/m2"}
+
+
+def test_mechanical_skips_paused_models(tmp_path):
+    """机械兜底候选排除暂停中模型（暂停者不试）。"""
+    stream = EventStream()
+    client = MockModelClient(rules={"m3": "401"})  # 选型决策全灭 -> 机械兜底
+    box = _toolbox(tmp_path, stream=stream, client=client)
+    box.registry.find("a/g1/m1").pause(60)  # 清单序首个暂停
+
+    result = _pipeline(box, tmp_path).run("任务")
+
+    assert result.ok is True
+    assert result.outcome == "fallback"
+    assert result.model_ref == "a/g1/m2"  # m1 暂停被跳过，m2 兜底成功
+    mech = next(e for e in stream if e.type == EventType.MECHANICAL_FALLBACK)
+    assert "a/g1/m1" not in mech.data["tried_models"]
+
+
+def test_run_restores_pause_state(tmp_path):
+    """启动时从持久暂停表恢复（过期条目顺手清扫）。"""
+    from datetime import datetime, timedelta, timezone
+
+    from model_switch.model import load_pause_state, save_pause_state
+
+    pause_path = tmp_path / "pause.json"
+    future = (datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat(timespec="seconds")
+    past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(timespec="seconds")
+    save_pause_state({"a/g1/m1": future, "a/g1/m2": past}, pause_path)
+
+    stream = EventStream()
+    client = MockModelClient(rules={"m3": "401"})  # 选型决策全灭 -> 机械兜底
+    box = _toolbox(tmp_path, stream=stream, client=client)
+    pipeline = Pipeline(
+        box,
+        recorder=FaultRecorder(None, faults_dir=tmp_path / "faults"),
+        probe_dir=tmp_path / "probe",
+        prefs_path=tmp_path / "prefs.md",
+        pause_path=pause_path,
+    )
+    result = pipeline.run("任务")
+
+    # m1 恢复暂停态被兜底跳过；m2 过期暂停被清扫、可兜底
+    assert result.model_ref == "a/g1/m2"
+    assert load_pause_state(pause_path) == {"a/g1/m1": future}  # 过期条目已清扫

@@ -27,6 +27,8 @@ mso history       # 故障历史（data/faults/）
 mso probe         # 探测故障模型队列（默认单轮；--watch 循环；--mock 自包含演示恢复，
                   #   演示故障走临时队列，不写真实 data/probe）
 mso auth          # 管理控制台账号（add/list/remove）
+mso pause <服务商/分组/模型> [秒]   # 暂停模型（冷却：选型/切换/兜底/决策者跳过，默认 300s）
+mso resume <服务商/分组/模型>      # 解除暂停
 mso mcp           # 启动 MCP server（stdio，供 MCP 宿主零代码接入）
 pytest            # 运行测试（先安装 dev 依赖：pip install -e ".[dev]"）
 ```
@@ -56,7 +58,7 @@ pytest            # 运行测试（先安装 dev 依赖：pip install -e ".[dev]
 | 3 | 决策中枢：manager 三决策点 + onboarding(init-check) + 联网搜索 | ✅ |
 | 4 | 故障自愈闭环：切换 / 诊断四项 / 人工门禁修复 / 规则库 / 机械兜底 | ✅ |
 | 5 | 周期探测 + CLI 收尾(probe/auth) + 嵌入接口（mso run --json / Python 库）+ MCP 薄封装 | ✅ (MCP 已锁定 <2.0，误装 2.x 会给出清晰降级指引) |
-| 6 | 测试收尾 / Web 演示 / 软著材料 + 架构增强（切换偏好沉淀 ✅ / PAUSE / 结果统计） | 进行中 |
+| 6 | 测试收尾 / Web 演示 / 软著材料 + 架构增强（切换偏好沉淀 ✅ / PAUSE 冷却 ✅ / 结果统计） | 进行中 |
 
 ## 嵌入与对接（规划）
 

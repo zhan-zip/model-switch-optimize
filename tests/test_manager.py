@@ -303,3 +303,63 @@ def test_plan_recovery_pref_disabled_by_flag(tmp_path):
     types = [e.type for e in stream]
     assert EventType.PLAN_PREF_HIT not in types
     assert EventType.PLAN_PREF_MISS not in types
+
+
+# -- 暂停（冷却）过滤 ---------------------------------------------------
+
+
+def test_pick_decision_model_skips_paused(tmp_path):
+    box = _toolbox(tmp_path, SequenceClient())
+    box.registry.find("b/g1/m3").pause(60)  # 保底暂停
+    box.registry.update("a/g1/m1", available=False)  # m1 不可用
+    mgr = DecisionManager(box, prefs_path=tmp_path / "p.md")
+    assert mgr.pick_decision_model() == "a/g1/m2"
+
+
+def test_plan_recovery_excludes_paused_from_others(tmp_path):
+    """切换候选表排除暂停中模型（prompt 收不到它）。"""
+    client = SequenceClient(
+        [json.dumps({"switch_to": "b/g1/m3", "diagnose": False, "reason": "顶上"})]
+    )
+    box = _toolbox(tmp_path, client)
+    box.registry.find("a/g1/m2").pause(60)  # m2 暂停，不出现在候选表
+    mgr = DecisionManager(box, prefs_path=tmp_path / "p.md")
+    decision = mgr.plan_recovery("a/g1/m1", "429")
+    assert decision.decision["switch_to"] == "b/g1/m3"
+    prompt = client.calls[0]["messages"][0]["content"]
+    assert "a/g1/m2" not in prompt  # 暂停模型不在候选表
+    assert "b/g1/m3" in prompt
+
+
+def test_choose_model_rejects_paused_model(tmp_path):
+    """选型 validator 拒绝暂停中模型，反馈后重选可用模型。"""
+    box = _toolbox(
+        tmp_path,
+        SequenceClient(
+            [
+                json.dumps({"model": "a/g1/m2", "reason": "选了暂停的"}),
+                json.dumps({"model": "a/g1/m1", "reason": "换一个"}),
+            ]
+        ),
+    )
+    box.registry.find("a/g1/m2").pause(60)
+    mgr = DecisionManager(box, prefs_path=tmp_path / "p.md")
+    decision = mgr.choose_model("任务")
+    assert decision.decision["model"] == "a/g1/m1"
+
+
+def test_plan_recovery_pause_seconds_validation(tmp_path):
+    """pause_seconds 可选：合法通过、非法（bool/越界/字符串）被拒并反馈重试。"""
+    client = SequenceClient(
+        [
+            json.dumps({"switch_to": "a/g1/m2", "diagnose": False, "pause_seconds": True, "reason": "布尔"}),
+            json.dumps({"switch_to": "a/g1/m2", "diagnose": False, "pause_seconds": 99999, "reason": "越界"}),
+            json.dumps({"switch_to": "a/g1/m2", "diagnose": False, "pause_seconds": "60", "reason": "字符串"}),
+            json.dumps({"switch_to": "a/g1/m2", "diagnose": False, "pause_seconds": 60, "reason": "合法"}),
+        ]
+    )
+    box = _toolbox(tmp_path, client)
+    mgr = DecisionManager(box, prefs_path=tmp_path / "p.md")
+    decision = mgr.plan_recovery("a/g1/m1", "429")
+    assert decision.decision["pause_seconds"] == 60
+    assert len(client.calls) == 4  # 三次被拒反馈重试 + 第四次通过

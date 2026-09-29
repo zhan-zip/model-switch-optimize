@@ -116,6 +116,23 @@ def test_probe_watch_stops_by_condition(tmp_path):
     assert time.monotonic() - started < 5  # interval=0 快速循环
 
 
+def test_probe_once_skips_paused_models(tmp_path):
+    """暂停中（冷却）的模型跳过本轮探测：留队、不计入结果。"""
+    stream = EventStream()
+    client = MockModelClient()  # 一切 ok
+    box = _toolbox(tmp_path, stream=stream, client=client)
+    box.registry.update("a/g1/m1", available=False)
+    box.registry.find("a/g1/m1").pause(60)  # m1 暂停中（冷却）
+
+    queue = ProbeQueue(tmp_path / "probe")
+    queue.enqueue("a/g1/m1", error_class="401")
+    result = probe_once(box, queue)
+
+    assert result["probed"] == 0  # 跳过，不探测
+    assert [e["model_ref"] for e in queue.entries()] == ["a/g1/m1"]  # 留队下轮
+    assert EventType.PROBE_RESULT not in [e.type for e in stream]
+
+
 def test_pipeline_failure_enqueues_probe(tmp_path):
     stream = EventStream()
     from model_switch.mocker import MockDecisionClient

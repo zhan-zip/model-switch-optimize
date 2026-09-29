@@ -90,6 +90,9 @@ def probe_once(
         if not ref or toolbox.registry.find(ref) is None:
             queue.remove(ref)  # 未知模型（配置已删）：清出队列
             continue
+        status = toolbox.registry.find(ref)
+        if status is not None and status.is_paused():
+            continue  # 暂停中（冷却）：留队，下轮再测
         checks = toolbox.test_connectivity(ref)
         ok = bool(checks.get(ref, {}).get("ok"))
         _emit(toolbox, EventType.PROBE_RESULT, {"model_ref": ref, "ok": ok})

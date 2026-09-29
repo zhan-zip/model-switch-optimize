@@ -15,6 +15,7 @@ from typing import Any
 from .events import EventType
 from .history import DEFAULT_FAULTS_DIR, FaultRecorder
 from .manager import DecisionError, DecisionManager
+from .model import DEFAULT_PAUSE_PATH, load_pause_state, prune_pause_state, restore_pause_state, save_pause_state
 from .prefs import DEFAULT_PREFS_PATH, add_plan_pref
 from .probe import DEFAULT_PROBE_DIR, ProbeQueue
 from .safety import redact
@@ -56,20 +57,23 @@ class Pipeline:
         probe_queue: ProbeQueue | None = None,
         probe_dir: Any = DEFAULT_PROBE_DIR,
         prefs_path: Any = DEFAULT_PREFS_PATH,
+        pause_path: Any = DEFAULT_PAUSE_PATH,
     ):
         self.toolbox = toolbox
         self.confirm_mode = confirm_mode
         self.max_switches = max_switches
         self.manager = manager
         self.prefs_path = prefs_path
+        self.pause_path = pause_path
         self.recorder = recorder or FaultRecorder(toolbox.stream, faults_dir=faults_dir)
         self.probe_queue = probe_queue if probe_queue is not None else ProbeQueue(probe_dir)
 
     def run(self, task: str) -> RunResult:
         """执行一次任务闭环。"""
 
-        # 启动时从探测队列恢复故障模型状态
+        # 启动时从探测队列恢复故障模型状态 + 从暂停表恢复冷却状态（过期顺手清扫）
         self.restore_from_probe_queue()
+        self.restore_pauses()
 
         trace_id = self.toolbox.stream.trace_id if self.toolbox.stream is not None else ""
         self._emit(EventType.PIPELINE_STARTED, {"task": task})
@@ -117,6 +121,14 @@ class Pipeline:
                 target = str(plan.decision["switch_to"])
             except DecisionError:
                 return self._mechanical(task, failed, attempts, switches, trace_id, last_error)
+            # 失败模型冷却（决策建议的可选 pause_seconds）
+            pause_seconds = plan.decision.get("pause_seconds")
+            if (
+                isinstance(pause_seconds, int)
+                and not isinstance(pause_seconds, bool)
+                and 1 <= pause_seconds <= 86400
+            ):
+                self._apply_pause(current, pause_seconds, reason="故障切换决策建议冷却")
             self._emit(
                 EventType.SWITCH_TRIGGERED,
                 {"from": current, "to": target, "error": result.error_class},
@@ -140,7 +152,9 @@ class Pipeline:
         """按配置顺序逐个试调（跳过已失败者）；首个成功即用，全败报错。"""
 
         candidates = [
-            str(status.ref) for status in self.toolbox.registry.all() if str(status.ref) not in failed
+            str(status.ref)
+            for status in self.toolbox.registry.all()
+            if str(status.ref) not in failed and not status.is_paused()
         ]
         results: dict[str, dict[str, Any]] = {}
         for ref in candidates:
@@ -184,6 +198,34 @@ class Pipeline:
                 status.last_error_class = entry.get("error_class", "")
                 status.last_error_detail = entry.get("task", "")
                 status.last_checked = entry.get("enqueued_at", "")
+
+    def restore_pauses(self) -> None:
+        """启动时从持久暂停表恢复冷却状态（过期条目顺手清扫=到期自动解除）。"""
+
+        pauses = restore_pause_state(self.toolbox.registry, self.pause_path)
+        try:
+            save_pause_state(pauses, self.pause_path)
+        except OSError:
+            pass  # 暂停表清扫写回失败不阻断主流程（内存态已生效）
+
+    def _apply_pause(self, model_ref: str, seconds: int, *, reason: str) -> None:
+        """暂停（冷却）一个模型：内存态 + 持久表 + 事件；到期自动解除。"""
+
+        status = self.toolbox.registry.find(model_ref)
+        if status is None:
+            return
+        status.pause(seconds)
+        try:
+            pauses = prune_pause_state(load_pause_state(self.pause_path))
+            if status.paused_until:
+                pauses[model_ref] = status.paused_until
+            save_pause_state(pauses, self.pause_path)
+        except OSError:
+            pass  # 暂停持久化失败不阻断主流程（内存态仍生效，本进程内有效）
+        self._emit(
+            EventType.MODEL_PAUSED,
+            {"model_ref": model_ref, "seconds": seconds, "reason": reason},
+        )
 
     def _on_fault(self, model_ref: str, error_class: str, detail: str, task: str) -> None:
         """故障入档 + 登记探测队列（恢复探测走 mso probe / --watch）。"""

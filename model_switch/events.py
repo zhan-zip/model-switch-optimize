@@ -33,6 +33,8 @@ class EventType:
     FAULT_RECORDED = "fault_recorded"
     PLAN_PREF_HIT = "plan_pref_hit"
     PLAN_PREF_MISS = "plan_pref_miss"
+    MODEL_PAUSED = "model_paused"
+    MODEL_RESUMED = "model_resumed"
     DIAGNOSIS_STARTED = "diagnosis_started"
     DIAGNOSIS_FACTS = "diagnosis_facts"
     DIAGNOSIS_CONCLUSION = "diagnosis_conclusion"

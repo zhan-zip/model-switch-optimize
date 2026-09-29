@@ -57,7 +57,7 @@ PLAN_PROMPT = """\
 {table}
 
 只输出一个 JSON 对象（不要 markdown 代码块、不要任何其他文字）：
-{{"switch_to": "<清单中的模型完整引用，照抄清单写法>", "diagnose": <true 或 false>, "reason": "<一句话理由>"}}"""
+{{"switch_to": "<清单中的模型完整引用，照抄清单写法>", "diagnose": <true 或 false>, "pause_seconds": <可选整数：对失败模型的冷却秒数（1~86400），如 429 限流建议 60、余额不足建议 3600；不适用则省略此字段>, "reason": "<一句话理由>"}}"""
 
 CONCLUDE_PROMPT = """\
 你是诊断结论决策者。根据四项检查事实与内置规则库，给出故障原因结论与建议动作。
@@ -117,10 +117,10 @@ class DecisionManager:
             status = self.toolbox.registry.find(ref)
             if status is None:
                 continue
-            if status.available is False:
-                continue  # 明确不可用跳过（未测/可用均可尝试）
+            if status.available is False or status.is_paused():
+                continue  # 明确不可用 / 暂停中（冷却）跳过（未测/可用均可尝试）
             return ref
-        raise DecisionError("无可用决策模型（全部明确不可用或已尝试）")
+        raise DecisionError("无可用决策模型（全部明确不可用/暂停中/已尝试）")
 
     # -- 核心决策通道 ---------------------------------------------------
 
@@ -220,6 +220,8 @@ class DecisionManager:
                 return f"model 必须是清单内的完整引用：{model}"
             if status.available is False:
                 return f"model {model} 当前不可用（已知故障或探测中），请选择其他模型"
+            if status.is_paused():
+                return f"model {model} 当前暂停中（冷却），请选择其他模型"
             if not str(data.get("reason", "")).strip():
                 return "缺少 reason 字段"
             return ""
@@ -252,7 +254,9 @@ class DecisionManager:
         others = [
             status
             for status in self.toolbox.registry.all()
-            if str(status.ref) != failed_ref and status.available is not False
+            if str(status.ref) != failed_ref
+            and status.available is not False
+            and not status.is_paused()
         ]
 
         # 切换偏好命中：程序直接决策（目标必须仍在可用候选集内）
@@ -294,6 +298,13 @@ class DecisionManager:
                 return f"switch_to 必须是清单内的完整引用：{switch_to}"
             if not isinstance(data.get("diagnose"), bool):
                 return "diagnose 字段必须是 true/false"
+            pause_seconds = data.get("pause_seconds")
+            if pause_seconds is not None and (
+                isinstance(pause_seconds, bool)
+                or not isinstance(pause_seconds, int)
+                or not 1 <= pause_seconds <= 86400
+            ):
+                return "pause_seconds 必须是 1~86400 的整数（或省略）"
             if not str(data.get("reason", "")).strip():
                 return "缺少 reason 字段"
             return ""
@@ -346,8 +357,9 @@ class DecisionManager:
     def _status_line(self, status: Any, labels: dict[str, str]) -> str:
         label = labels.get(str(status.ref), "-")
         latency = f"{status.last_latency_ms}ms" if status.last_latency_ms else "-"
+        paused = "，暂停中（冷却）" if status.is_paused() else ""
         return (
-            f"- {status.ref} | {_STATE_TEXT[status.available]} | "
+            f"- {status.ref} | {_STATE_TEXT[status.available]}{paused} | "
             f"标签: {label} | 上次延迟: {latency}"
         )
 
