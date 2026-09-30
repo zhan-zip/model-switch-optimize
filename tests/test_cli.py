@@ -326,6 +326,7 @@ def test_probe_mock_writes_no_real_probe_queue(workspace, capsys):
 def test_auth_add_masks_password(workspace, capsys, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda prompt: "user@example.com")
     monkeypatch.setattr("model_switch.cli.getpass.getpass", lambda prompt: "secret-pw-123")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)  # 模拟交互终端
     assert main(["auth", "add", "provider-a"]) == 0
     out = capsys.readouterr().out
     assert "secret-pw-123" not in out  # 密码不回显
@@ -339,6 +340,7 @@ def test_auth_add_masks_password(workspace, capsys, monkeypatch):
 def test_auth_list_and_remove(workspace, capsys, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda prompt: "user@example.com")
     monkeypatch.setattr("model_switch.cli.getpass.getpass", lambda prompt: "secret-pw-123")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)  # 模拟交互终端
     main(["auth", "add", "provider-a"])
     capsys.readouterr()
     assert main(["auth", "list"]) == 0
@@ -353,6 +355,14 @@ def test_auth_list_and_remove(workspace, capsys, monkeypatch):
 def test_auth_list_empty(workspace, capsys):
     assert main(["auth", "list"]) == 0
     assert "暂无账号" in capsys.readouterr().out
+
+
+def test_auth_add_no_tty(workspace, capsys, monkeypatch):
+    """测试无 tty 环境下 auth add 正确拒绝"""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    assert main(["auth", "add", "provider-a"]) == 1
+    out = capsys.readouterr().out
+    assert "需要交互式终端" in out or "无 tty 环境" in out
 
 
 # -- pause / resume 命令（阶段6 增强项 ① PAUSE） ---------------------------

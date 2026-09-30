@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import shutil
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -525,6 +526,10 @@ def _mask(value: str) -> str:
 
 def cmd_auth(args: argparse.Namespace) -> int:
     if args.auth_action == "add":
+        # 检测是否在交互终端环境，无 tty 时 getpass 会挂起
+        if not sys.stdin.isatty():
+            print("错误：auth add 需要交互式终端（无 tty 环境下不可用）")
+            return 1
         path = _auth_path(args.provider)
         try:
             account = input(f"[{args.provider}] 账号：").strip()
@@ -708,8 +713,22 @@ def _force_utf8_stdio() -> None:
             pass
 
 
+def _check_path_and_warn() -> None:
+    """检测 mso 命令是否在 PATH 中，如果不在则给出友好提示。"""
+    if shutil.which("mso") is None:
+        # 获取当前 Python 可执行文件所在的 Scripts 目录
+        python_exe = Path(sys.executable)
+        scripts_dir = python_exe.parent / "Scripts"
+        
+        print("⚠️  警告：mso 命令未在 PATH 中找到", file=sys.stderr)
+        print(f"   可执行文件可能位于：{scripts_dir}", file=sys.stderr)
+        print("   请将该目录添加到系统 PATH 环境变量中", file=sys.stderr)
+        print("   或使用 python -m model_switch.cli 代替 mso 命令\n", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     _force_utf8_stdio()
+    _check_path_and_warn()
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "init":
