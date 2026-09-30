@@ -71,15 +71,22 @@ class Pipeline:
         self.recorder = recorder or FaultRecorder(toolbox.stream, faults_dir=faults_dir)
         self.probe_queue = probe_queue if probe_queue is not None else ProbeQueue(probe_dir)
 
-    def run(self, task: str) -> RunResult:
-        """执行一次任务闭环。"""
+    def run(self, task: str, prompt: str | None = None) -> RunResult:
+        """执行一次任务闭环。
+        
+        Args:
+            task: 任务文本（若提供 prompt，task 作为上下文拼接）
+            prompt: 自定义 prompt（可选）
+        """
+        # 若提供 prompt，将 task 作为上下文拼接
+        actual_task = f"{prompt}\n\n上下文：{task}" if prompt else task
 
         # 启动时从探测队列恢复故障模型状态 + 从暂停表恢复冷却状态（过期顺手清扫）
         self.restore_from_probe_queue()
         self.restore_pauses()
 
         trace_id = self.toolbox.stream.trace_id if self.toolbox.stream is not None else ""
-        self._emit(EventType.PIPELINE_STARTED, {"task": task})
+        self._emit(EventType.PIPELINE_STARTED, {"task": actual_task})
         mgr = (
             self.manager
             if self.manager is not None
@@ -96,15 +103,15 @@ class Pipeline:
 
         # 1. 选型（决策全灭 -> 直接机械兜底）
         try:
-            decision = mgr.choose_model(task, confirm_mode=self.confirm_mode)
+            decision = mgr.choose_model(actual_task, confirm_mode=self.confirm_mode)
             current = str(decision.decision["model"])
         except DecisionError:
-            return self._mechanical(task, failed, attempts, switches, trace_id)
+            return self._mechanical(actual_task, failed, attempts, switches, trace_id)
 
         # 2. 调用 -> 失败 -> 切换循环
         while True:
             attempts += 1
-            result = self.toolbox.call_model(current, [{"role": "user", "content": task}])
+            result = self.toolbox.call_model(current, [{"role": "user", "content": actual_task}])
             self._record_stats(current, result.ok, result.latency_ms, switches)
             if result.ok:
                 # 切换后成功：沉淀切换偏好（同错类下次程序直切；失败不阻断结果返回）
@@ -119,14 +126,14 @@ class Pipeline:
                 )
             failed.add(current)
             last_error = result.error_class
-            self._on_fault(current, result.error_class, result.detail, task)
+            self._on_fault(current, result.error_class, result.detail, actual_task)
             if switches >= self.max_switches:
-                return self._mechanical(task, failed, attempts, switches, trace_id, last_error)
+                return self._mechanical(actual_task, failed, attempts, switches, trace_id, last_error)
             try:
                 plan = mgr.plan_recovery(current, result.error_class, detail=result.detail)
                 target = str(plan.decision["switch_to"])
             except DecisionError:
-                return self._mechanical(task, failed, attempts, switches, trace_id, last_error)
+                return self._mechanical(actual_task, failed, attempts, switches, trace_id, last_error)
             # 失败模型冷却（决策建议的可选 pause_seconds）
             pause_seconds = plan.decision.get("pause_seconds")
             if (

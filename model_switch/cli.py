@@ -71,6 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_run = sub.add_parser("run", help="完整闭环处理任务（选型->调用->故障切换->机械兜底）")
     p_run.add_argument("task", help="任务文本")
+    p_run.add_argument("--prompt", help="自定义 prompt（若提供，task 作为上下文拼接）")
     p_run.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
     p_run.add_argument("--mock", action="store_true", help="使用 mock（无真实 key 演示故障切换闭环）")
     p_run.add_argument("--json", action="store_true", help="输出 JSON 事件流")
@@ -323,7 +324,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         pause_path=pause_path,
         stats_path=stats_path,
     )
-    result = pipeline.run(args.task)
+    result = pipeline.run(args.task, prompt=args.prompt)
 
     diagnosis: list[dict[str, Any]] = []
     if args.diagnose:
