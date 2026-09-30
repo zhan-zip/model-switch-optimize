@@ -5,10 +5,13 @@
 
 **开发状态**：阶段1~5 已完成（骨架 + 工具层 + 决策中枢 + 故障自愈闭环 + 周期探测+嵌入接口+MCP）。
 
+**当前质量状态**：阶段6 增强项已完成；观察点修复已完成；全量测试 `240 passed`。
+
 ## 快速开始
 
 ```bash
 pip install -e .
+# 如果 mso 不在 PATH，可使用 python -m model_switch.cli，或将 Python 用户级 Scripts 目录加入 PATH
 mso init          # 生成配置模板 config/models.yaml + data 目录
 mso validate      # 校验配置（--json 输出结构化结果）
 mso tools         # 模型清单与状态
@@ -25,9 +28,11 @@ mso run "任务"    # 完整闭环：选型 → 调用 → 故障自动切换（
                   #   --json 事件流；--mock 无 key 演示故障切换闭环（演示故障入临时队列/临时偏好）
 mso diagnose <服务商>   # 手动诊断：四项检查（可达/余额/分组/连通）→ 结论与建议
 mso history       # 故障历史（data/faults/）
+                  #   损坏/非法编码的旧档案会跳过；已经保存为 ???? 的历史文字无法恢复
 mso probe         # 探测故障模型队列（默认单轮；--watch 循环；--mock 自包含演示恢复，
                   #   演示故障走临时队列，不写真实 data/probe）
 mso auth          # 管理控制台账号（add/list/remove）
+                  #   auth add 需要交互式终端；非交互环境会立即拒绝，避免 getpass 挂起
 mso pause <服务商/分组/模型> [秒]   # 暂停模型（冷却：选型/切换/兜底/决策者跳过，默认 300s）
 mso resume <服务商/分组/模型>      # 解除暂停
 mso stats          # 查看 run 统计（各模型近 20 次成功率/耗时，样本不足 3 次不显示）
