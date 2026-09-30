@@ -76,6 +76,7 @@ def test_run_success_first_try(tmp_path):
     assert EventType.MECHANICAL_FALLBACK not in types
     finished = stream.events[-1]
     assert finished.data["outcome"] == "ok"
+    assert finished.data["text"] == result.text
     assert finished.data["summary"]["attempts"] == 1
 
 

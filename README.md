@@ -118,7 +118,18 @@ mso run "总结这段文本"
 
 ## 任务结果
 
-使用 `mso run --json` 或 Python API 时，可以根据结果状态判断任务是否完成：
+使用 `mso run --json` 或 Python API 时，可以根据结果状态判断任务是否完成。
+
+CLI JSON 输出是完整的 JSON 事件数组。宿主应读取 `pipeline_finished` 事件，并从 `data.outcome` 判断状态、从 `data.text` 获取最终模型回复；失败时 `data.text` 为空字符串，详细摘要在 `data.summary`：
+
+```python
+events = json.loads(stdout)
+finished = next(event for event in events if event["type"] == "pipeline_finished")
+outcome = finished["data"]["outcome"]
+text = finished["data"]["text"]
+```
+
+状态含义如下：
 
 | 状态 | 含义 |
 | --- | --- |
@@ -174,3 +185,7 @@ mso probe
 - 不自动修改用户 key 或服务商分组。
 - 不自动充值。
 - 所有模型都不可用时，任务仍可能失败。
+
+## 许可证
+
+本项目采用 MIT License，详见 [LICENSE](LICENSE)。

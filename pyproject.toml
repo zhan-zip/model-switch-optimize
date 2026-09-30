@@ -7,6 +7,7 @@ name = "model-switch-optimize"
 version = "1.0.0"
 description = "多模型降级自修复管理系统：模型故障自修复 + 自动切换"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = [
     "PyYAML>=6.0",

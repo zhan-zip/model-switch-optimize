@@ -211,6 +211,9 @@ def test_run_mock_json_event_stream(workspace, capsys):
     assert "fault_recorded" in types
     assert types[-1] == "pipeline_finished"
     assert types[0] == "pipeline_started"
+    finished = events[-1]
+    assert finished["data"]["outcome"] == "switched"
+    assert finished["data"]["text"] == "[mock] 任务完成：写个爬虫"
 
 
 def test_run_mock_with_diagnose(workspace, capsys):

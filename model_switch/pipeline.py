@@ -265,6 +265,7 @@ class Pipeline:
             EventType.PIPELINE_FINISHED,
             {
                 "outcome": result.outcome,
+                "text": result.text,
                 "summary": {
                     "ok": result.ok,
                     "model_ref": result.model_ref,
