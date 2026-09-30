@@ -1,68 +1,53 @@
-# model-switch-optimize · 多模型降级自修复管理系统
+# model-switch-optimize
 
-> 独立模块，单独可用。模型**故障自修复 + 自动切换**：决策由"模型"做，
-> 程序只提供基础设施与工具箱。新增模型只需改配置，程序零改动。
+轻量的多模型任务路由与故障转移中间件。
 
-**开发状态**：阶段1~5 已完成；阶段6 的 plan_prefs、PAUSE、stats 和测试隔离增强项已完成，当前剩余 Web 演示、软著材料和 init-check 远程确认程序化入口；浏览器 MCP 真实接入排在阶段6之后。
+它可以统一管理多个服务商、分组和模型，根据任务选择合适的模型；当当前模型调用失败时，自动尝试切换到其他可用模型，尽量让任务继续完成。
 
-**当前质量状态**：阶段6 增强项已完成；观察点修复已完成；全量测试 `240 passed`。
+## 主要能力
 
-## 新用户入口
+- 多服务商、多分组、多模型配置
+- 指定保底模型
+- 根据模型标签和任务内容进行选型
+- 模型调用失败后自动切换
+- 所有候选模型失败时按配置顺序机械兜底
+- 故障记录、事件流和调用历史
+- 模型暂停与冷却
+- 故障模型恢复探测
+- 切换偏好记忆，减少重复决策
+- CLI、Python、Agent 和 MCP 多种接入方式
+- 支持用户使用自己的模型地址和 API key
 
-完整的接入步骤请先阅读：[`宿主对接与使用指南.md`](宿主对接与使用指南.md)。
+## 适用场景
 
-这份 README 负责说明项目是什么和如何开始；使用指南负责说明如何接入自己的项目。新用户建议按下面顺序操作：
-
-1. 安装项目并运行 `mso init`。
-2. 编辑 `config/models.yaml`，填写自己的服务商、地址、分组、模型和保底模型。
-3. 通过环境变量设置自己的 API key。
-4. 运行 `mso validate` 和 `mso tools --check --model <服务商/分组/模型>`。
-5. 根据项目类型选择 CLI、Python、Agent 托管、Agent 自决策或 MCP 接入方式。
-
-项目不依赖仓库内的测试模型或测试 key。用户可以使用自己的模型和 key，但模型服务需要提供 OpenAI Chat Completions 兼容接口：请求路径为 `<base_url>/chat/completions`，使用 Bearer key 认证。
+- 使用多个模型服务的应用
+- 需要提高任务完成率的 Agent
+- 需要跨服务商切换模型的自动化任务
+- 不希望在业务代码中重复编写模型重试和降级逻辑的项目
 
 ## 快速开始
 
+### 1. 安装
+
 ```bash
-pip install -e .
-# 如果 mso 不在 PATH，可使用 python -m model_switch.cli，或将 Python 用户级 Scripts 目录加入 PATH
-mso init          # 生成配置模板 config/models.yaml + data 目录
-mso validate      # 校验配置（--json 输出结构化结果）
-mso tools         # 模型清单与状态
-mso tools --check --model <服务商/分组/模型>   # 连通测试（真实调用，事件流落盘）
-mso tools --check --mock                      # mock 演示（无真实 key 也能跑）
-mso init-check    # 初始化 onboarding：连通 + 联网跑分 + 模型画像 + 标签落盘
-                  #   --per-group 每分组代表抽样连通；--mock 无 key 演示；
-                  #   --json 输出事件流（跳过终端确认）
-mso run "任务"    # 完整闭环：选型 → 调用 → 故障自动切换（任务不中断）→ 机械兜底
-                  #   启动时自动恢复探测队列中的故障模型（跳过最近探测失败的模型）
-                  #   同类错误第二次起自动复用上次成功切换目标（切换偏好命中，程序直切）
-                  #   --prompt "自定义提示词"：若提供，任务文本作为上下文拼接
-                  #   --diagnose 故障后自动诊断；--confirm once 选型确认一次；
-                  #   --json 事件流；--mock 无 key 演示故障切换闭环（演示故障入临时队列/临时偏好）
-mso diagnose <服务商>   # 手动诊断：四项检查（可达/余额/分组/连通）→ 结论与建议
-mso history       # 故障历史（data/faults/）
-                  #   损坏/非法编码的旧档案会跳过；已经保存为 ???? 的历史文字无法恢复
-mso probe         # 探测故障模型队列（默认单轮；--watch 循环；--mock 自包含演示恢复，
-                  #   演示故障走临时队列，不写真实 data/probe）
-mso auth          # 管理控制台账号（add/list/remove）
-                  #   auth add 需要交互式终端；非交互环境会立即拒绝，避免 getpass 挂起
-mso pause <服务商/分组/模型> [秒]   # 暂停模型（冷却：选型/切换/兜底/决策者跳过，默认 300s）
-mso resume <服务商/分组/模型>      # 解除暂停
-mso stats          # 查看 run 统计（各模型近 20 次成功率/耗时，样本不足 3 次不显示）
-mso mcp           # 启动 MCP server（stdio，供 MCP 宿主零代码接入）
-pytest            # 运行测试（先安装 dev 依赖：pip install -e ".[dev]"）
+python -m pip install -e .
 ```
 
-## 配置
+如果系统找不到 `mso`，可以使用：
 
-三级结构：**服务商 → 分组 → 模型**；使用者只需填写模型清单 + 一个保底模型。
+```bash
+python -m model_switch.cli
+```
 
-- key 一律走环境变量（`key_env` 只写变量名，不落明文）
-- 配置顺序即机械兜底顺序
-- 示例见 `mso init` 生成的模板
+### 2. 生成配置
 
-用户可以完全替换为自己的配置，例如：
+```bash
+mso init
+```
+
+### 3. 配置自己的模型
+
+编辑 `config/models.yaml`：
 
 ```yaml
 providers:
@@ -71,7 +56,9 @@ providers:
     groups:
       - name: main
         key_env: MY_PROVIDER_KEY
-        models: [model-a, model-b]
+        models:
+          - model-a
+          - model-b
 
 fallback:
   provider: my-provider
@@ -80,59 +67,110 @@ fallback:
   key_env: MY_PROVIDER_KEY
 ```
 
-然后设置对应环境变量并验证：
+配置结构为：
+
+```text
+服务商 → 分组 → 模型
+```
+
+用户可以自行填写服务商名称、API 地址、分组名称、模型名称和保底模型。
+
+### 4. 设置 API key
+
+API key 只通过环境变量提供，`key_env` 只填写变量名。
+
+PowerShell 示例：
 
 ```powershell
 $env:MY_PROVIDER_KEY = "你的 API key"
+```
+
+### 5. 验证配置和模型
+
+```bash
 mso validate
 mso tools --check --model my-provider/main/model-a
 ```
 
-如果服务商不是 OpenAI Chat Completions 兼容协议，或者要求特殊认证 Header、特殊请求路径和特殊响应格式，目前不能直接使用，需要增加协议适配。
+### 6. 执行任务
 
-## 架构（三层）
-
-```
-决策中枢（动态模型：选型 / 切换 / 判因 / 定修复）
-程序工具层（call_model · test_connectivity · apply_fix(人工门禁) · ...）
-机械兜底（全部不可用时按配置顺序逐个试调）
+```bash
+mso run "总结这段文本"
 ```
 
-## 开发阶段
+任务执行失败时，中间件会记录故障并尝试切换其他可用模型。
 
-| 阶段 | 内容 | 状态 |
-|---|---|---|
-| 1 | 骨架与基础设施：config / events / safety / cli(init·validate) | ✅ |
-| 2 | 工具层与 mock：model / client / health / tools / mocker | ✅ |
-| 3 | 决策中枢：manager 三决策点 + onboarding(init-check) + 联网搜索 | ✅ |
-| 4 | 故障自愈闭环：切换 / 诊断四项 / 人工门禁修复 / 规则库 / 机械兜底 | ✅ |
-| 5 | 周期探测 + CLI 收尾(probe/auth) + 嵌入接口（mso run --json / Python 库）+ MCP 薄封装 | ✅ (MCP 已锁定 <2.0，误装 2.x 会给出清晰降级指引) |
-| 6 | Web 演示 / 软著材料 / init-check 远程确认程序化入口 + 架构增强收尾（切换偏好沉淀 ✅ / PAUSE 冷却 ✅ / run 统计经验分 ✅ / 测试隔离 ✅） | 进行中（收尾项） |
+## 接入自己的项目
 
-## 嵌入与对接（已支持）
+完整的安装、配置、调用示例和后台诊断说明见：
 
-| 宿主形态 | 对接方式 |
-|---|---|
-| 任意语言程序 | CLI 子进程 `mso run --json "任务"`，解析 JSON 事件流 |
+[`宿主对接与使用指南.md`](宿主对接与使用指南.md)
+
+支持以下接入方式：
+
+| 宿主类型 | 接入方式 |
+| --- | --- |
+| 普通程序 | CLI 子进程 `mso run --json "任务"` |
 | Python 项目 | `from model_switch import ModelSwitcher` |
-| agent 项目（托管） | agent 工具列表加"执行任务"工具，模块全权代理选型/切换 |
-| agent 项目（自决策） | 六工具（TOOL_SPECS）注册进 function calling，统一入口 `dispatch(name, args)` |
-| MCP 宿主 | MCP 薄封装（阶段5），零代码接入 |
+| Agent 托管模式 | Agent 调用 `run()`，由中间件负责选型和切换 |
+| Agent 自决策模式 | 使用 `dispatch()` 调用六个基础工具 |
+| MCP 宿主 | 启动 `mso mcp`，通过 MCP tools 接入 |
 
-高危操作走人工确认协议（`confirm_requested` → 宿主转发用户 → `confirm_granted/denied`）。
+## 任务结果
 
-任务失败后的后台诊断由宿主调度：宿主发现 `fault_recorded` 后，可以在自己的后台任务中调用 `diagnose(provider)`，并定期调用 `probe()`。中间件本体不会自行启动后台 Agent 或后台线程。
+使用 `mso run --json` 或 Python API 时，可以根据结果状态判断任务是否完成：
 
-## 运行条件
+| 状态 | 含义 |
+| --- | --- |
+| `ok` | 第一次选择的模型成功 |
+| `switched` | 发生模型切换后成功 |
+| `fallback` | 进入机械兜底后成功 |
+| `failed` | 所有候选模型都失败 |
 
-- Python 3.10+；`pip install -e .` 一次安装
-- 零数据库、零服务端、单进程可跑
-- 依赖：PyYAML（运行）；mcp（运行，MCP 宿主接入）；pytest（开发）
+## 故障处理
+
+查看故障历史：
+
+```bash
+mso history
+```
+
+手动诊断服务商：
+
+```bash
+mso diagnose <provider>
+```
+
+探测故障模型是否恢复：
+
+```bash
+mso probe
+```
+
+宿主 Agent 可以在后台自行调度 `diagnose` 和 `probe`。中间件本体不会自动启动后台 Agent 或后台线程。
+
+## 接口要求
+
+用户配置的模型服务需要提供 OpenAI Chat Completions 兼容接口：
+
+- 请求地址：`<base_url>/chat/completions`
+- 认证方式：`Authorization: Bearer <API key>`
+- 请求包含 `model` 和 `messages`
+- 响应至少包含 `choices[0].message.content`
+
+如果服务商使用其他协议、特殊认证 Header、特殊请求路径或特殊响应格式，目前不能直接使用，需要增加协议适配。
+
+## 安全注意事项
+
+- 不要把 API key 写入 `models.yaml`、代码、日志或 Git 仓库。
+- `key_env` 只写环境变量名称。
+- MCP 宿主启动的子进程必须能够读取对应的 key 环境变量。
+- 高风险修复操作必须经过用户或宿主确认。
 
 ## 能力边界
 
-- 主要目标是任务不中断、模型故障切换、机械兜底、故障记录和恢复探测。
-- 真实控制台登录、自动修改 key、自动修改分组和自动充值不属于基础接入能力。
-- `apply_fix` 等高风险操作必须经过宿主或用户确认。
-- MCP 宿主启动的子进程必须能够读取配置中 `key_env` 对应的环境变量，否则会返回 `config` 错误。
-- 本地 benchmark 和显式 `task_type` 分类仍属于后续优化计划，当前任务适配主要依靠模型标签和决策模型判断。
+- 主要负责任务路由、故障切换、机械兜底、故障记录和恢复探测。
+- 不自动登录第三方控制台。
+- 不自动修改用户 key 或服务商分组。
+- 不自动充值。
+- 所有模型都不可用时，任务仍可能失败。
