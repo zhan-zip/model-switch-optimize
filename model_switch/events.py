@@ -101,11 +101,12 @@ class EventStream:
         self._events: list[Event] = []
         self._subscribers: list[Callable[[Event], None]] = []
         self._persist_path: Path | None = None
+        self._file_created = False  # 延迟创建标志，避免预建空文件
         if persist_dir is not None:
             persist_dir = Path(persist_dir)
             persist_dir.mkdir(parents=True, exist_ok=True)
             self._persist_path = persist_dir / f"{self.trace_id}.jsonl"
-            self._persist_path.write_text("", encoding="utf-8")
+            # 不再预建空文件，等第一次 emit 时再创建
 
     # -- 查询 ---------------------------------------------------------
 
@@ -150,6 +151,10 @@ class EventStream:
         for callback in self._subscribers:
             callback(event)
         if self._persist_path is not None:
+            # 延迟创建：第一次写入时才创建文件
+            if not self._file_created:
+                self._persist_path.write_text("", encoding="utf-8")
+                self._file_created = True
             with self._persist_path.open("a", encoding="utf-8") as fh:
                 fh.write(event.to_json() + "\n")
         return event
