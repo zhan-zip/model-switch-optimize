@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from model_switch.cli import main
+from model_switch.cli import _check_path_and_warn, main
 
 
 @pytest.fixture
@@ -17,6 +17,20 @@ def test_init_creates_files(workspace):
     assert (workspace / "config" / "models.yaml").exists()
     for d in ("data/auth", "data/faults", "data/events"):
         assert (workspace / d).is_dir()
+
+
+def test_path_warning_uses_user_scripts_dir(monkeypatch, capsys):
+    monkeypatch.setattr("model_switch.cli.shutil.which", lambda name: None)
+    monkeypatch.setattr(
+        "model_switch.cli.sysconfig.get_path",
+        lambda name, scheme=None: r"C:\Users\tester\AppData\Roaming\Python\Python313\Scripts",
+    )
+
+    _check_path_and_warn()
+
+    err = capsys.readouterr().err
+    assert "C:\\Users\\tester\\AppData\\Roaming\\Python\\Python313\\Scripts" in err
+    assert "python -m model_switch.cli" in err
 
 
 def test_init_refuses_overwrite_then_force(workspace):

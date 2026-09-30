@@ -13,6 +13,7 @@ import getpass
 import json
 import shutil
 import sys
+import sysconfig
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -716,10 +717,7 @@ def _force_utf8_stdio() -> None:
 def _check_path_and_warn() -> None:
     """检测 mso 命令是否在 PATH 中，如果不在则给出友好提示。"""
     if shutil.which("mso") is None:
-        # 获取当前 Python 可执行文件所在的 Scripts 目录
-        python_exe = Path(sys.executable)
-        scripts_dir = python_exe.parent / "Scripts"
-        
+        scripts_dir = Path(sysconfig.get_path("scripts", scheme="nt_user"))
         print("⚠️  警告：mso 命令未在 PATH 中找到", file=sys.stderr)
         print(f"   可执行文件可能位于：{scripts_dir}", file=sys.stderr)
         print("   请将该目录添加到系统 PATH 环境变量中", file=sys.stderr)
