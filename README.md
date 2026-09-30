@@ -7,6 +7,20 @@
 
 **当前质量状态**：阶段6 增强项已完成；观察点修复已完成；全量测试 `240 passed`。
 
+## 新用户入口
+
+完整的接入步骤请先阅读：[`宿主对接与使用指南.md`](宿主对接与使用指南.md)。
+
+这份 README 负责说明项目是什么和如何开始；使用指南负责说明如何接入自己的项目。新用户建议按下面顺序操作：
+
+1. 安装项目并运行 `mso init`。
+2. 编辑 `config/models.yaml`，填写自己的服务商、地址、分组、模型和保底模型。
+3. 通过环境变量设置自己的 API key。
+4. 运行 `mso validate` 和 `mso tools --check --model <服务商/分组/模型>`。
+5. 根据项目类型选择 CLI、Python、Agent 托管、Agent 自决策或 MCP 接入方式。
+
+项目不依赖仓库内的测试模型或测试 key。用户可以使用自己的模型和 key，但模型服务需要提供 OpenAI Chat Completions 兼容接口：请求路径为 `<base_url>/chat/completions`，使用 Bearer key 认证。
+
 ## 快速开始
 
 ```bash
@@ -48,6 +62,34 @@ pytest            # 运行测试（先安装 dev 依赖：pip install -e ".[dev]
 - 配置顺序即机械兜底顺序
 - 示例见 `mso init` 生成的模板
 
+用户可以完全替换为自己的配置，例如：
+
+```yaml
+providers:
+  - name: my-provider
+    base_url: https://api.example.com/v1
+    groups:
+      - name: main
+        key_env: MY_PROVIDER_KEY
+        models: [model-a, model-b]
+
+fallback:
+  provider: my-provider
+  group: main
+  model: model-a
+  key_env: MY_PROVIDER_KEY
+```
+
+然后设置对应环境变量并验证：
+
+```powershell
+$env:MY_PROVIDER_KEY = "你的 API key"
+mso validate
+mso tools --check --model my-provider/main/model-a
+```
+
+如果服务商不是 OpenAI Chat Completions 兼容协议，或者要求特殊认证 Header、特殊请求路径和特殊响应格式，目前不能直接使用，需要增加协议适配。
+
 ## 架构（三层）
 
 ```
@@ -79,8 +121,18 @@ pytest            # 运行测试（先安装 dev 依赖：pip install -e ".[dev]
 
 高危操作走人工确认协议（`confirm_requested` → 宿主转发用户 → `confirm_granted/denied`）。
 
+任务失败后的后台诊断由宿主调度：宿主发现 `fault_recorded` 后，可以在自己的后台任务中调用 `diagnose(provider)`，并定期调用 `probe()`。中间件本体不会自行启动后台 Agent 或后台线程。
+
 ## 运行条件
 
 - Python 3.10+；`pip install -e .` 一次安装
 - 零数据库、零服务端、单进程可跑
 - 依赖：PyYAML（运行）；mcp（运行，MCP 宿主接入）；pytest（开发）
+
+## 能力边界
+
+- 主要目标是任务不中断、模型故障切换、机械兜底、故障记录和恢复探测。
+- 真实控制台登录、自动修改 key、自动修改分组和自动充值不属于基础接入能力。
+- `apply_fix` 等高风险操作必须经过宿主或用户确认。
+- MCP 宿主启动的子进程必须能够读取配置中 `key_env` 对应的环境变量，否则会返回 `config` 错误。
+- 本地 benchmark 和显式 `task_type` 分类仍属于后续优化计划，当前任务适配主要依靠模型标签和决策模型判断。
