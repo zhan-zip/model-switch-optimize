@@ -1,9 +1,10 @@
 """CLI 入口：mso <command>。
 
-已实现（九命令全齐）：
+已实现（十三命令全齐）：
 init（生成配置模板）· validate（校验配置）· tools（模型清单与状态）
 · init-check（onboarding）· run（完整闭环）· diagnose（手动诊断）
-· history（故障历史）· probe（周期探测）· auth（控制台账号）· mcp（MCP server）。
+· history（故障历史）· probe（周期探测）· auth（控制台账号）
+· pause（暂停模型）· resume（恢复模型）· stats（统计信息）· mcp（MCP server）。
 """
 from __future__ import annotations
 
@@ -626,7 +627,12 @@ def cmd_stats(args: argparse.Namespace) -> int:
     stats = load_stats()
     rows = all_summaries([str(ref) for ref in config.iter_model_refs()], stats=stats)
     if not any(rows.values()):
-        print("暂无统计数据（run 若干次后生成；样本不足 3 次不显示）")
+        # 统计总记录数以区分"完全没数据"和"有数据但样本不足"
+        total_records = sum(len(entry.get("recent", [])) for entry in stats.values())
+        if total_records == 0:
+            print("暂无统计数据（需先执行 mso run 命令生成调用记录）")
+        else:
+            print(f"样本不足（当前共 {total_records} 条记录，但每模型需 ≥3 次才纳入统计）")
         return 0
     print("run 统计（近 20 次滚动窗口，选型时注入决策参考）：")
     for ref, exp in rows.items():
