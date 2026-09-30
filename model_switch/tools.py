@@ -244,7 +244,8 @@ class Toolbox:
         for path in sorted(self._faults_dir.glob("*.json")):
             try:
                 records.append(json.loads(path.read_text(encoding="utf-8")))
-            except (OSError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                # 跳过损坏/乱码的档案文件（如早期 GBK 控制台写入的文件）
                 continue
         return records
 

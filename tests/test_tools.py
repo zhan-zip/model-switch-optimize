@@ -133,6 +133,31 @@ def test_fault_history_empty_and_records(tmp_path, monkeypatch):
     assert records[0]["model_ref"] == "a/g1/m1"
 
 
+def test_fault_history_skips_corrupted_files(tmp_path, monkeypatch):
+    """测试 fault_history 容错：跳过损坏/乱码的 JSON 文件"""
+    box = _toolbox(tmp_path, monkeypatch)
+    faults_dir = tmp_path / "faults"
+    # 正常文件
+    (faults_dir / "001.json").write_text(
+        json.dumps({"model_ref": "a/g1/m1", "error_class": "401"}), encoding="utf-8"
+    )
+    # 乱码文件（模拟 GBK 写入 UTF-8 读取）
+    (faults_dir / "002.json").write_bytes(b"\xff\xfe\x00\x00")
+    # 损坏的 JSON
+    (faults_dir / "003.json").write_text("{invalid json", encoding="utf-8")
+    # 正常文件
+    (faults_dir / "004.json").write_text(
+        json.dumps({"model_ref": "b/g1/m2", "error_class": "500"}), encoding="utf-8"
+    )
+    
+    box2 = Toolbox(box.config, box.registry, None, faults_dir=faults_dir)
+    records = box2.fault_history()
+    # 应该只返回 2 条正常记录，跳过损坏的
+    assert len(records) == 2
+    assert records[0]["model_ref"] == "a/g1/m1"
+    assert records[1]["model_ref"] == "b/g1/m2"
+
+
 def test_dispatch_routes_all_tools(tmp_path, monkeypatch):
     box = _toolbox(tmp_path, monkeypatch)
     assert box.dispatch("call_model", {"model_ref": "a/g1/m1",
