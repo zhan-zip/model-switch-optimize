@@ -2,8 +2,10 @@
 
 标准库实现（urllib），零额外依赖。
 错误分类（供决策中枢判因）：401 / 429 / 5xx / 超时 / 断网。
-调用签名统一为 (base_url, api_key, model, messages, *, timeout, max_tokens, opener)，
-mock 客户端按同签名注入（mocker.MockModelClient）。
+
+阶段1：本模块保留 CallResult 和 call_openai_compatible 作为兼容层，
+内部委托给 protocols.openai_chat.OpenAIChatAdapter。
+新代码应使用 protocols 层的 ModelRequest/ModelResponse。
 """
 from __future__ import annotations
 
@@ -35,7 +37,10 @@ class ErrorClass:
 
 @dataclass(frozen=True)
 class CallResult:
-    """一次模型调用的结果（成功或分类后的失败）。"""
+    """一次模型调用的结果（成功或分类后的失败）。
+    
+    阶段1 保留此结构作为兼容层，新代码应使用 protocols.ModelResponse。
+    """
 
     ok: bool
     model: str = ""
@@ -70,93 +75,37 @@ def call_openai_compatible(
     max_tokens: int | None = None,
     opener: Callable[..., Any] | None = None,
 ) -> CallResult:
-    """POST {base_url}/chat/completions，返回分类后的 CallResult。"""
+    """POST {base_url}/chat/completions，返回分类后的 CallResult。
+    
+    阶段1：委托给 OpenAIChatAdapter，保持旧接口兼容。
+    """
+    from .protocols.base import ModelRequest
+    from .protocols.openai_chat import OpenAIChatAdapter
 
-    url = base_url.rstrip("/") + "/chat/completions"
-    payload: dict[str, Any] = {"model": model, "messages": messages}
-    if max_tokens is not None:
-        payload["max_tokens"] = max_tokens
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-        "User-Agent": USER_AGENT,  # 部分网关（Cloudflare）拦截默认 urllib UA
-        "Accept": "application/json",
-    }
-    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    open_ = opener or urllib.request.urlopen
+    adapter = OpenAIChatAdapter()
+    request = ModelRequest(
+        model=model,
+        messages=messages,
+        timeout=timeout,
+        max_tokens=max_tokens,
+    )
+    response = adapter.call(base_url, api_key, request, opener=opener)
 
-    start = time.perf_counter()
-    try:
-        with open_(request, timeout=timeout) as response:
-            raw = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        return CallResult(
-            ok=False, model=model,
-            error_class=_classify_http(exc.code),
-            detail=_http_detail(exc),
-            latency_ms=_elapsed_ms(start),
-        )
-    except urllib.error.URLError as exc:
-        reason = getattr(exc, "reason", None)
-        if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
-            error_class = ErrorClass.TIMEOUT
-        else:
-            error_class = ErrorClass.NETWORK
-        return CallResult(
-            ok=False, model=model,
-            error_class=error_class,
-            detail=redact_text(str(exc))[:_DETAIL_LIMIT],
-            latency_ms=_elapsed_ms(start),
-        )
-    except TimeoutError:
-        return CallResult(
-            ok=False, model=model,
-            error_class=ErrorClass.TIMEOUT,
-            detail="request timed out",
-            latency_ms=_elapsed_ms(start),
-        )
-    except Exception as exc:  # 其他未预期错误（如响应体非 JSON）
-        return CallResult(
-            ok=False, model=model,
-            error_class=ErrorClass.UNKNOWN,
-            detail=redact_text(f"{type(exc).__name__}: {exc}")[:_DETAIL_LIMIT],
-            latency_ms=_elapsed_ms(start),
-        )
+    # 转换为旧的 CallResult 格式
+    usage_dict = {}
+    if response.usage.input_tokens is not None:
+        usage_dict["prompt_tokens"] = response.usage.input_tokens
+    if response.usage.output_tokens is not None:
+        usage_dict["completion_tokens"] = response.usage.output_tokens
+    if response.usage.total_tokens is not None:
+        usage_dict["total_tokens"] = response.usage.total_tokens
 
-    latency_ms = _elapsed_ms(start)
-    try:
-        choices = raw.get("choices") or []
-        text = str((choices[0].get("message") or {}).get("content", ""))
-        usage = raw.get("usage") or {}
-    except (AttributeError, IndexError, TypeError):
-        return CallResult(
-            ok=False, model=model,
-            error_class=ErrorClass.UNKNOWN,
-            detail=redact_text(f"unexpected response shape: {str(raw)[:_DETAIL_LIMIT]}"),
-            latency_ms=latency_ms,
-        )
-    return CallResult(ok=True, model=model, text=text, latency_ms=latency_ms, usage=usage)
-
-
-def _elapsed_ms(start: float) -> int:
-    return int((time.perf_counter() - start) * 1000)
-
-
-def _classify_http(code: int) -> str:
-    if code in (401, 403):
-        return ErrorClass.AUTH
-    if code == 429:
-        return ErrorClass.RATE_LIMIT
-    if code >= 500:
-        return ErrorClass.SERVER
-    return ErrorClass.UNKNOWN
-
-
-def _http_detail(exc: urllib.error.HTTPError) -> str:
-    try:
-        payload = exc.read().decode("utf-8", errors="replace")
-    except Exception:
-        payload = ""
-    head = f"HTTP {exc.code} {exc.reason}"
-    return redact_text(f"{head} {payload}".strip())[:_DETAIL_LIMIT]
+    return CallResult(
+        ok=response.ok,
+        model=model,
+        text=response.text,
+        error_class=response.error_class,
+        detail=response.detail,
+        latency_ms=response.latency_ms,
+        usage=usage_dict,
+    )

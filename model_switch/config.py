@@ -72,6 +72,12 @@ class Provider:
     name: str
     base_url: str
     groups: tuple[Group, ...]
+    protocol: str = "openai_chat"
+    options: dict[str, Any] = None
+
+    def __post_init__(self):
+        if self.options is None:
+            object.__setattr__(self, "options", {})
 
 
 @dataclass(frozen=True)
@@ -162,6 +168,11 @@ def validate_config(config: Config) -> list[str]:
         elif not p.base_url.startswith(("http://", "https://")):
             errors.append(f"[{p.name}] base_url 必须以 http:// 或 https:// 开头")
 
+        # 协议校验（阶段1 新增）
+        from .protocols.registry import list_protocols
+        if p.protocol not in list_protocols():
+            errors.append(f"[{p.name}] 未知协议：{p.protocol}（当前支持：{', '.join(list_protocols())}）")
+
         if not p.groups:
             errors.append(f"[{p.name}] groups 不能为空")
 
@@ -246,6 +257,14 @@ def _build_provider(index: int, raw: Any) -> Provider:
     if not base_url:
         raise ConfigError(f"providers[{index}]（{name}）base_url 必填")
 
+    # 协议与选项（阶段1 新增，旧配置默认 openai_chat）
+    protocol = str(raw.get("protocol", "openai_chat")).strip() or "openai_chat"
+    options = raw.get("options")
+    if options is None:
+        options = {}
+    elif not isinstance(options, dict):
+        raise ConfigError(f"[{name}] options 必须是映射")
+
     groups_raw = raw.get("groups")
     if not isinstance(groups_raw, list) or not groups_raw:
         raise ConfigError(f"[{name}] groups 必须是非空列表")
@@ -266,4 +285,4 @@ def _build_provider(index: int, raw: Any) -> Provider:
         if not models:
             raise ConfigError(f"[{name}] groups[{gi}]（{g_name}）models 不能为空")
         groups.append(Group(name=g_name, key_env=g_key, models=models))
-    return Provider(name=name, base_url=base_url, groups=tuple(groups))
+    return Provider(name=name, base_url=base_url, groups=tuple(groups), protocol=protocol, options=options)
