@@ -30,6 +30,8 @@ class ModelStatus:
     ref: ModelRef
     base_url: str
     key_env: str
+    protocol: str = "openai_chat"
+    options: dict[str, Any] = field(default_factory=dict)
     available: bool | None = None      # None = 未测
     last_error_class: str = ""
     last_error_detail: str = ""
@@ -72,6 +74,7 @@ class ModelStatus:
             "base_url": self.base_url,
             "key_env": self.key_env,
             "key_status": mask_env_value(resolve_api_key(self.key_env)),
+            "protocol": self.protocol,
             "available": self.available,
             "paused": self.is_paused(),
             "paused_until": self.paused_until,
@@ -93,7 +96,11 @@ class ModelRegistry:
                 for model in group.models:
                     ref = ModelRef(provider.name, group.name, model)
                     self._statuses[str(ref)] = ModelStatus(
-                        ref=ref, base_url=provider.base_url, key_env=group.key_env
+                        ref=ref,
+                        base_url=provider.base_url,
+                        key_env=group.key_env,
+                        protocol=provider.protocol,
+                        options=dict(provider.options),
                     )
 
     @property

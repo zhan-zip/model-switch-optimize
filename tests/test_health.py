@@ -36,17 +36,45 @@ def test_missing_key_returns_config_error(tmp_path, monkeypatch):
 
 
 def test_probe_calls_client_with_tiny_message(tmp_path, monkeypatch):
+    """阶段1：test_connectivity 不再接受 client 参数，改用协议适配器。
+
+    本测试通过 monkeypatch 协议注册表来验证路由逻辑。
+    """
     monkeypatch.setenv("KEY_A", "sk-x")
     registry = _registry(tmp_path)
+
+    # 记录适配器调用
     seen = {}
 
-    def fake_client(base_url, api_key, model, messages, *, timeout, max_tokens):
-        seen.update(base_url=base_url, model=model, messages=messages, max_tokens=max_tokens)
-        return CallResult(ok=True, model=model, text="pong", latency_ms=10)
+    from model_switch.protocols.base import ModelResponse, Usage
 
-    result = health.test_connectivity(registry.find("a/g1/m1"), client=fake_client)
-    assert result.ok is True
-    assert seen["base_url"] == "https://a.example.com/v1"
-    assert seen["model"] == "m1"
-    assert seen["max_tokens"] <= 8  # 极小消息，省 token
-    assert seen["messages"][0]["content"] == "ping"
+    class FakeAdapter:
+        def call(self, base_url, api_key, request, **kwargs):
+            seen.update(
+                base_url=base_url,
+                model=request.model,
+                messages=request.messages,
+                max_tokens=request.max_tokens,
+            )
+            return ModelResponse(
+                ok=True,
+                text="pong",
+                latency_ms=10,
+                usage=Usage(),
+            )
+
+    # 替换协议注册表
+    import model_switch.protocols.registry as registry_module
+    original_adapters = registry_module._REGISTRY.copy()
+    registry_module._REGISTRY["openai_chat"] = FakeAdapter
+
+    try:
+        result = health.test_connectivity(registry.find("a/g1/m1"))
+        assert result.ok is True
+        assert seen["base_url"] == "https://a.example.com/v1"
+        assert seen["model"] == "m1"
+        assert seen["max_tokens"] <= 8  # 极小消息，省 token
+        assert seen["messages"][0]["content"] == "ping"
+    finally:
+        registry_module._REGISTRY.clear()
+        registry_module._REGISTRY.update(original_adapters)

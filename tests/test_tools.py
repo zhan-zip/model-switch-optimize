@@ -22,7 +22,7 @@ fallback: { provider: b, group: g1, model: m3, key_env: KEY_B }
 """
 
 
-def _toolbox(tmp_path, monkeypatch, rules=None, stream=None):
+def _toolbox(tmp_path, monkeypatch, rules=None, stream=None, mock=True):
     path = tmp_path / "models.yaml"
     path.write_text(VALID_YAML, encoding="utf-8")
     monkeypatch.setenv("KEY_A", "sk-a")
@@ -38,6 +38,7 @@ def _toolbox(tmp_path, monkeypatch, rules=None, stream=None):
         console=MockConsole(),
         web_search_impl=MockWebSearch().search,
         faults_dir=faults_dir,
+        mock=mock,  # 阶段1：mock 模式避免真实网络调用
     )
 
 
@@ -73,7 +74,7 @@ def test_call_unknown_model_returns_config_error(tmp_path, monkeypatch):
 
 
 def test_call_model_without_key_returns_config_error(tmp_path, monkeypatch):
-    box = _toolbox(tmp_path, monkeypatch)
+    box = _toolbox(tmp_path, monkeypatch, mock=False)  # 非 mock 模式才检查 key
     monkeypatch.delenv("KEY_A", raising=False)  # 构造后再删除，避免 helper 再设置
     result = box.call_model("a/g1/m1", [{"role": "user", "content": "hi"}])
     assert result.ok is False

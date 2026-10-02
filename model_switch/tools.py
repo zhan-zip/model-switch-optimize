@@ -100,6 +100,9 @@ class Toolbox:
                 detail=f"未知模型：{model_ref}（可用 mso tools 查看清单）",
             )
         from .config import resolve_api_key
+        from .protocols.base import ModelRequest
+        from .protocols.registry import get_adapter
+        from .client import response_to_result
 
         if self.mock:
             api_key = "[mock-key]"
@@ -113,18 +116,32 @@ class Toolbox:
                 )
 
         self._emit(EventType.MODEL_CALLED, {"model_ref": model_ref, "attempt": 1})
-        result = self._client(
-            status.base_url,
-            api_key,
-            status.ref.model,
-            messages,
-            timeout=timeout,
-        )
-        result = CallResult(
-            ok=result.ok, model=model_ref, text=result.text,
-            error_class=result.error_class, detail=result.detail,
-            latency_ms=result.latency_ms, usage=result.usage,
-        )
+
+        if self.mock:
+            # mock 模式：使用旧客户端接口
+            result = self._client(
+                status.base_url,
+                api_key,
+                status.ref.model,
+                messages,
+                timeout=timeout,
+            )
+        else:
+            # 真实模式：使用协议适配器
+            adapter = get_adapter(status.protocol)
+            request = ModelRequest(
+                model=status.ref.model,
+                messages=messages,
+                timeout=timeout,
+            )
+            response = adapter.call(
+                status.base_url,
+                api_key,
+                request,
+                **status.options,
+            )
+            result = response_to_result(response, model_ref)
+
         self.registry.update(
             model_ref,
             available=result.ok,
@@ -172,6 +189,7 @@ class Toolbox:
             ref_str = str(status.ref)
             self._emit(EventType.MODEL_CALLED, {"model_ref": ref_str, "attempt": 1, "probe": True})
             if self.mock:
+                # mock 模式：使用旧客户端接口
                 result = self._client(
                     status.base_url,
                     "[mock-key]",
@@ -181,12 +199,8 @@ class Toolbox:
                     max_tokens=PROBE_MAX_TOKENS,
                 )
             else:
-                result = test_connectivity(status, client=self._client, timeout=timeout)
-            result = CallResult(
-                ok=result.ok, model=ref_str, text=result.text,
-                error_class=result.error_class, detail=result.detail,
-                latency_ms=result.latency_ms, usage=result.usage,
-            )
+                # 真实模式：使用协议适配器
+                result = test_connectivity(status, timeout=timeout)
             self.registry.update(
                 ref_str,
                 available=result.ok,

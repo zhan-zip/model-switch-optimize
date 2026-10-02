@@ -6,6 +6,9 @@
 阶段1：本模块保留 CallResult 和 call_openai_compatible 作为兼容层，
 内部委托给 protocols.openai_chat.OpenAIChatAdapter。
 新代码应使用 protocols 层的 ModelRequest/ModelResponse。
+
+新增：response_to_result() 将 ModelResponse 转换为 CallResult，
+供其他需要保持 CallResult 接口的模块使用（如 Toolbox、health）。
 """
 from __future__ import annotations
 
@@ -65,6 +68,30 @@ class CallResult:
 ModelClient = Callable[..., CallResult]
 
 
+def response_to_result(response: Any, model: str) -> CallResult:
+    """将 protocols.ModelResponse 转换为 CallResult。
+
+    供需要保持 CallResult 接口的模块使用（Toolbox、health）。
+    """
+    usage_dict = {}
+    if response.usage.input_tokens is not None:
+        usage_dict["prompt_tokens"] = response.usage.input_tokens
+    if response.usage.output_tokens is not None:
+        usage_dict["completion_tokens"] = response.usage.output_tokens
+    if response.usage.total_tokens is not None:
+        usage_dict["total_tokens"] = response.usage.total_tokens
+
+    return CallResult(
+        ok=response.ok,
+        model=model,
+        text=response.text,
+        error_class=response.error_class,
+        detail=response.detail,
+        latency_ms=response.latency_ms,
+        usage=usage_dict,
+    )
+
+
 def call_openai_compatible(
     base_url: str,
     api_key: str,
@@ -91,21 +118,4 @@ def call_openai_compatible(
     )
     response = adapter.call(base_url, api_key, request, opener=opener)
 
-    # 转换为旧的 CallResult 格式
-    usage_dict = {}
-    if response.usage.input_tokens is not None:
-        usage_dict["prompt_tokens"] = response.usage.input_tokens
-    if response.usage.output_tokens is not None:
-        usage_dict["completion_tokens"] = response.usage.output_tokens
-    if response.usage.total_tokens is not None:
-        usage_dict["total_tokens"] = response.usage.total_tokens
-
-    return CallResult(
-        ok=response.ok,
-        model=model,
-        text=response.text,
-        error_class=response.error_class,
-        detail=response.detail,
-        latency_ms=response.latency_ms,
-        usage=usage_dict,
-    )
+    return response_to_result(response, model)
