@@ -1,0 +1,23 @@
+# 旧版配置样例（阶段 0 之前的格式）
+# 用于测试配置兼容性和迁移逻辑
+
+providers:
+  - name: openai-compatible
+    base_url: https://api.example.com/v1
+    groups:
+      - name: default
+        key_env: EXAMPLE_API_KEY
+        models: [gpt-4o, gpt-4o-mini]
+
+  - name: local-ollama
+    base_url: http://localhost:11434/v1
+    groups:
+      - name: local
+        key_env: OLLAMA_DUMMY_KEY
+        models: [llama3, mistral]
+
+fallback:
+  provider: openai-compatible
+  group: default
+  model: gpt-4o-mini
+  key_env: EXAMPLE_API_KEY

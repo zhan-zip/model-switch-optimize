@@ -1,0 +1,27 @@
+{
+  "openai-compatible/default/gpt-4o": [
+    [true, 823, 0],
+    [true, 1205, 0],
+    [false, 0, 0],
+    [true, 945, 0],
+    [true, 1102, 1],
+    [true, 889, 0],
+    [true, 1034, 0],
+    [true, 756, 0],
+    [true, 1287, 0],
+    [true, 923, 0]
+  ],
+  "openai-compatible/default/gpt-4o-mini": [
+    [true, 456, 0],
+    [true, 523, 1],
+    [true, 489, 0],
+    [true, 534, 0],
+    [true, 467, 0]
+  ],
+  "local-ollama/local/llama3": [
+    [true, 2345, 0],
+    [false, 0, 0],
+    [false, 0, 0],
+    [true, 2567, 1]
+  ]
+}

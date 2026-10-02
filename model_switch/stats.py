@@ -20,7 +20,9 @@ MIN_SAMPLES = 3    # 样本不足不显示
 
 
 def load_stats(path: Path | str = DEFAULT_STATS_PATH) -> dict[str, dict[str, Any]]:
-    """读统计表 {model_ref: {"recent": [[ok, latency, switches], ...]}}；不存在/损坏返回空。"""
+    """读统计表 {model_ref: {"recent": [[ok, latency, switches], ...]}}；不存在/损坏返回空。
+    兼容旧格式：如果 entry 是数组而非对象，自动迁移为 {"recent": array}。
+    """
 
     path = Path(path)
     if not path.exists():
@@ -33,9 +35,13 @@ def load_stats(path: Path | str = DEFAULT_STATS_PATH) -> dict[str, dict[str, Any
         return {}
     stats: dict[str, dict[str, Any]] = {}
     for ref, entry in data.items():
-        if not isinstance(entry, dict) or not isinstance(entry.get("recent"), list):
-            continue  # 坏条目跳过
-        stats[str(ref)] = {"recent": [list(item) for item in entry["recent"] if isinstance(item, (list, tuple))]}
+        # 兼容旧格式：entry 直接是数组 [[ok, latency, switches], ...]
+        if isinstance(entry, list):
+            stats[str(ref)] = {"recent": [list(item) for item in entry if isinstance(item, (list, tuple))]}
+        # 新格式：entry 是对象 {"recent": [...]}
+        elif isinstance(entry, dict) and isinstance(entry.get("recent"), list):
+            stats[str(ref)] = {"recent": [list(item) for item in entry["recent"] if isinstance(item, (list, tuple))]}
+        # 其他格式跳过
     return stats
 
 
