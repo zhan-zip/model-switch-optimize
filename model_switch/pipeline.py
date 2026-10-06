@@ -29,6 +29,10 @@ from .prefs import (
 )
 from .probe import DEFAULT_PROBE_DIR, ProbeQueue
 from .safety import redact
+from .session_store import (
+    DEFAULT_SESSIONS_DIR,
+    load_session,
+)
 from .stats import DEFAULT_STATS_PATH, record_run
 from .task_store import (
     DEFAULT_TASKS_DIR,
@@ -96,6 +100,7 @@ class Pipeline:
         pause_path: Any = DEFAULT_PAUSE_PATH,
         stats_path: Any = DEFAULT_STATS_PATH,
         tasks_dir: Any = DEFAULT_TASKS_DIR,
+        sessions_dir: Any = DEFAULT_SESSIONS_DIR,
     ):
         self.toolbox = toolbox
         self.confirm_mode = confirm_mode
@@ -105,15 +110,27 @@ class Pipeline:
         self.pause_path = pause_path
         self.stats_path = stats_path
         self.tasks_dir = tasks_dir
+        self.sessions_dir = sessions_dir
         self.recorder = recorder or FaultRecorder(toolbox.stream, faults_dir=faults_dir)
         self.probe_queue = probe_queue if probe_queue is not None else ProbeQueue(probe_dir)
 
-    def run(self, task: str, prompt: str | None = None) -> RunResult:
-        """执行一次任务闭环（阶段3 前行为不变：一调用完成）。
-        
+    def run(
+        self,
+        task: str,
+        prompt: str | None = None,
+        *,
+        session_id: str | None = None,
+        preferred_model: str | None = None,
+        strict_model: bool = False,
+    ) -> RunResult:
+        """执行一次任务闭环（阶段4 起支持会话偏好：preferred/strict）。
+
         Args:
             task: 任务文本（若提供 prompt，task 作为上下文拼接）
             prompt: 自定义 prompt（可选）
+            session_id: 会话 ID（可选；命中会话偏好则优先于决策选型）
+            preferred_model: 单次任务显式模型（优先级最高；覆盖会话偏好）
+            strict_model: 硬限制——该模型失败时不切换、不兜底，直接 failed
         """
         # 若提供 prompt，将 task 作为上下文拼接
         actual_task = f"{prompt}\n\n上下文：{task}" if prompt else task
@@ -123,19 +140,30 @@ class Pipeline:
         self.restore_pauses()
 
         trace_id = self.toolbox.stream.trace_id if self.toolbox.stream is not None else ""
-        self._emit(EventType.PIPELINE_STARTED, {"task": actual_task})
+        self._emit(EventType.PIPELINE_STARTED, {"task": actual_task, "session_id": session_id})
         mgr = self._manager()
 
-        # 1. 选型（决策全灭 -> 直接机械兜底）
-        try:
-            decision = mgr.choose_model(actual_task, confirm_mode=self.confirm_mode)
-            current = str(decision.decision["model"])
-            task_type = str(decision.decision.get("task_type", "general"))
-        except DecisionError:
-            return self._mechanical(actual_task, set(), 0, 0, trace_id)
+        # 1. 选型：会话偏好/显式模型优先；决策全灭 -> 直接机械兜底
+        current = self._resolve_session_preferred(session_id, preferred_model)
+        task_type = "general"
+        if current is not None:
+            if not strict_model:
+                # 软偏好：验证后被直接采用（reason 标记会话偏好）
+                status = self.toolbox.registry.find(current)
+                if status is not None and status.available is False:
+                    current = None  # 已被探测标记不可用 -> 回退决策选型
+            if current is not None:
+                task_type = "general"  # 会话偏好不重判任务类型（沿用 general）
+        if current is None:
+            try:
+                decision = mgr.choose_model(actual_task, confirm_mode=self.confirm_mode)
+                current = str(decision.decision["model"])
+                task_type = str(decision.decision.get("task_type", "general"))
+            except DecisionError:
+                return self._mechanical(actual_task, set(), 0, 0, trace_id)
 
         # 2. 调用 -> 失败 -> 切换循环（与 execute 共用 _execute_flow）
-        return self._execute_flow(actual_task, current, task_type, trace_id)
+        return self._execute_flow(actual_task, current, task_type, trace_id, strict=strict_model)
 
     # -- 两阶段审批（阶段3）---------------------------------------------
 
@@ -145,11 +173,15 @@ class Pipeline:
         prompt: str | None = None,
         *,
         confirm_mode: str | None = None,
+        session_id: str | None = None,
+        preferred_model: str | None = None,
+        strict_model: bool = False,
     ) -> dict[str, Any]:
         """准备任务：选型但不执行，任务状态落盘 data/tasks/ 供跨进程继续。
 
         返回 info dict：{task_id, status, task_type, selected_model, reason,
         expires_at, ok}。任务文本脱敏后写盘，不保存任何凭据。
+        session_id/preferred_model/strict_model：会话偏好接入（阶段4）。
         """
         actual_task = f"{prompt}\n\n上下文：{task}" if prompt else task
         mode = confirm_mode or self.confirm_mode
@@ -159,20 +191,29 @@ class Pipeline:
         self.restore_pauses()
 
         trace_id = self.toolbox.stream.trace_id if self.toolbox.stream is not None else ""
-        self._emit(EventType.PIPELINE_STARTED, {"task": actual_task, "stage": "prepare"})
+        self._emit(
+            EventType.PIPELINE_STARTED,
+            {"task": actual_task, "stage": "prepare", "session_id": session_id},
+        )
         mgr = self._manager()
 
         # 决策全灭：备一个 ready + selected_model="" 的任务，execute 时走机械兜底
         selected_model = ""
         reason = "决策模型全灭，执行时机械兜底"
         task_type = "general"
-        try:
-            decision = mgr.choose_model(actual_task, confirm_mode="never")
-            selected_model = str(decision.decision["model"])
-            reason = str(decision.decision.get("reason", ""))
-            task_type = str(decision.decision.get("task_type", "general"))
-        except DecisionError:
-            pass
+        # 1. 会话偏好/显式模型优先（阶段4）
+        preferred = self._resolve_session_preferred(session_id, preferred_model)
+        if preferred is not None:
+            selected_model = preferred
+            reason = "会话偏好命中"
+        else:
+            try:
+                decision = mgr.choose_model(actual_task, confirm_mode="never")
+                selected_model = str(decision.decision["model"])
+                reason = str(decision.decision.get("reason", ""))
+                task_type = str(decision.decision.get("task_type", "general"))
+            except DecisionError:
+                pass  # 决策全灭：selected_model 维持空，execute 机械兜底
 
         # 状态判定：never 直接 ready；once 且任务偏好命中 -> ready；否则等确认
         status = READY if mode == "never" else AWAITING_CONFIRMATION
@@ -192,6 +233,9 @@ class Pipeline:
             "selected_model": selected_model,
             "reason": reason,
             "confirm_mode": mode,
+            "session_id": session_id,
+            "preferred_model": preferred if preferred is not None else preferred_model,
+            "strict_model": bool(strict_model),
             "created_at": created_at,
             "expires_at": expires_at_from(created_at),
             "trace_id": trace_id,
@@ -316,11 +360,13 @@ class Pipeline:
             return result
 
         # 执行开始：标 running（并发/重复执行保护落盘）
+        strict_model = bool(record.get("strict_model", False))
         update_task(task_id, {"status": RUNNING}, self.tasks_dir)
         try:
             result = self._execute_flow(
                 str(record.get("task", "")), selected_model, task_type,
                 self.toolbox.stream.trace_id if self.toolbox.stream is not None else "",
+                strict=strict_model,
             )
             # once 模式确认成功：沉淀任务偏好（对齐 run() 的 once 语义，两路径并存）
             if (
@@ -378,11 +424,14 @@ class Pipeline:
         current: str,
         task_type: str,
         trace_id: str,
+        *,
+        strict: bool = False,
     ) -> RunResult:
         """调用 -> 失败切换循环 -> 机械兜底（run 与 execute 共用）。
 
         阶段3：原 run() 第 2 步整体提取为该方法，行为逐字段不变。
         task_type 透传给统计记录。
+        阶段4：strict=True 时当前模型失败不切换、不机械兜底，直接 failed。
         """
         mgr = self._manager()
         failed: set[str] = set()
@@ -414,6 +463,14 @@ class Pipeline:
             failed.add(current)
             last_error = result.error_class
             self._on_fault(current, result.error_class, result.detail, task)
+            if strict:
+                # strict 硬限制：只使用该模型，失败直接返回（不切换/不兜底）
+                return self._finish(
+                    RunResult(
+                        False, OUTCOME_FAILED, "", "", attempts, last_error,
+                        switches, trace_id, task_type,
+                    )
+                )
             if switches >= self.max_switches:
                 return self._mechanical(task, failed, attempts, switches, trace_id, last_error, task_type)
             try:
@@ -578,6 +635,29 @@ class Pipeline:
             pass  # 探测队列写入失败不阻断主流程
 
 # -- 内部 ---------------------------------------------------------
+
+    def _resolve_session_preferred(
+        self, session_id: str | None, explicit_model: str | None = None
+    ) -> str | None:
+        """解析会话偏好模型（阶段4 选型优先级）。
+
+        优先级：显式 preferred_model > session_id 命中 store > None（走决策选型）。
+        目标模型须存在且当前可行（未暂停/可用非 False）；否则返回 None 由调用方回退。
+
+        不传 session_id 时不读 store（不产生隐式全局状态）。
+        """
+        candidate = explicit_model
+        if candidate is None and session_id:
+            session = load_session(session_id, self.sessions_dir)
+            candidate = session.get("preferred_model") or None
+        if not candidate:
+            return None
+        status = self.toolbox.registry.find(candidate)
+        if status is None:
+            return None  # 已从配置移除：不采用，回退选型
+        if status.is_paused() or status.available is False:
+            return None  # 不可用/暂停中：不采用
+        return candidate
 
     def _manager(self) -> DecisionManager:
         """惰性构造决策中枢（run/execute 共用）。"""

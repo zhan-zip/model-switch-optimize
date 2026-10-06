@@ -17,6 +17,7 @@
 - 切换偏好记忆，减少重复决策
 - 调用统计与健康状态（成功率、错误分布、延迟分位、Token、健康分级）
 - 两阶段审批：先准备（选型待确认），批准后再执行，支持网页和远程宿主跨进程审批
+- 会话模型偏好：为会话指定首选模型（可选 strict 硬限制），支持网页/Agent 点选切换
 - CLI、Python、Agent 和 MCP 多种接入方式
 - 支持用户使用自己的模型地址和 API key
 
@@ -116,8 +117,8 @@ mso run "总结这段文本"
 | Python 项目 | `from model_switch import ModelSwitcher` |
 | Agent 托管模式 | Agent 调用 `run()`，由中间件负责选型和切换 |
 | Agent 自决策模式 | 使用 `dispatch()` 调用六个基础工具 |
-| 网页 / 异步宿主 | `mso prepare --json` + `mso execute <task_id> --json` 两阶段审批 |
-| MCP 宿主 | 启动 `mso mcp`，通过 MCP tools 接入（含 `prepare_run` / `execute_run`） |
+| 网页 / 异步宿主 | `mso prepare --json` + `mso execute <task_id> --json` 两阶段审批；`mso model use/get/auto` 会话偏好 |
+| MCP 宿主 | 启动 `mso mcp`，通过 MCP tools 接入（含 `prepare_run` / `execute_run` / `set_preferred_model` 等共 17 个工具） |
 
 ## 任务结果
 
@@ -164,6 +165,46 @@ result = switcher.execute(info["task_id"], user_confirmed=True)
 ```
 
 MCP 宿主可调用 `prepare_run` 和 `execute_run` 完成同样的流程（先向用户展示推荐模型与理由，确认后以 `user_confirmed=true` 调用执行）。
+
+## 会话模型偏好
+
+在网页或 Agent 中为用户提供"切换会话模型"的能力：为某个会话固定首选模型，后续任务优先使用它（命中时跳过决策选型，省一次决策调用）。
+
+设置：
+
+```bash
+mso model use my-provider/main/model-a --session user-123          # 软偏好
+mso model use my-provider/main/model-a --session user-123 --strict # 硬限制
+mso model get --session user-123                                    # 查询
+mso model auto --session user-123                                   # 恢复自动选择
+```
+
+随后执行任务时传入会话 ID：
+
+```bash
+mso run "写一个爬虫" --session user-123
+```
+
+Python：
+
+```python
+switcher.set_preferred_model("user-123", "my-provider/main/model-a")
+switcher.get_preferred_model("user-123")
+switcher.clear_preferred_model("user-123")
+result = switcher.run("写一个爬虫", session_id="user-123")
+```
+
+选型优先级：
+
+```text
+单次任务显式模型（run/prepare 的 --model）> 会话偏好 > 自动 choose_model > 机械兜底
+```
+
+说明：
+
+- 偏好模型必须存在、可用且未暂停，否则 `use` 会被拒绝。
+- `strict`（硬限制）：该模型失败时不切换、不机械兜底，直接失败——只用于明确调试场景。
+- 不传 `session_id` 时不产生全局状态；清除偏好后下一任务重新走决策模型。
 
 ## 故障处理
 

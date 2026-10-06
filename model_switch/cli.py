@@ -1,11 +1,12 @@
 """CLI 入口：mso <command>。
 
-已实现（十五命令全齐）：
+已实现（十八命令全齐）：
 init（生成配置模板）· validate（校验配置）· tools（模型清单与状态）
 · init-check（onboarding）· run（完整闭环）· prepare（两阶段：选型不执行）
-· execute（两阶段：执行已批准任务）· diagnose（手动诊断）
-· history（故障历史）· probe（周期探测）· auth（控制台账号）
-· pause（暂停模型）· resume（恢复模型）· stats（统计信息）· mcp（MCP server）。
+· execute（两阶段：执行已批准任务）· model（会话模型偏好 use/get/auto）
+· diagnose（手动诊断）· history（故障历史）· probe（周期探测）
+· auth（控制台账号）· pause（暂停模型）· resume（恢复模型）
+· stats（统计信息）· mcp（MCP server）。
 """
 from __future__ import annotations
 
@@ -80,6 +81,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--json", action="store_true", help="输出 JSON 事件流")
     p_run.add_argument("--diagnose", action="store_true", help="故障后自动诊断相关服务商（四项检查->结论）")
     p_run.add_argument("--confirm", default="never", choices=["never", "once", "always"], help="选型人工确认策略")
+    p_run.add_argument("--session", default=None, help="会话 ID（命中会话偏好优先选型）")
+    p_run.add_argument("--model", default=None, help="单次任务显式模型（优先级最高）")
+    p_run.add_argument("--strict", action="store_true", help="硬限制：该模型失败不切换、直接失败")
+
+    p_model = sub.add_parser("model", help="会话模型偏好（阶段4：use/get/auto）")
+    model_sub = p_model.add_subparsers(dest="model_action", metavar="<action>", required=True)
+    m_use = model_sub.add_parser("use", help="设置会话偏好模型")
+    m_use.add_argument("model_ref", help="服务商/分组/模型名")
+    m_use.add_argument("--session", default="default", help="会话 ID（默认 default）")
+    m_use.add_argument("--strict", action="store_true", help="硬限制：该模型失败不切换、直接失败")
+    m_use.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
+    m_use.add_argument("--mock", action="store_true", help="使用 mock（无真实 key 也能演示）")
+    m_get = model_sub.add_parser("get", help="查询会话偏好")
+    m_get.add_argument("--session", default="default", help="会话 ID（默认 default）")
+    m_get.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
+    m_auto = model_sub.add_parser("auto", help="恢复自动选择（清除会话偏好）")
+    m_auto.add_argument("--session", default="default", help="会话 ID（默认 default）")
+    m_auto.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
+    m_auto.add_argument("--mock", action="store_true", help="使用 mock（无真实 key 也能演示）")
 
     p_prep = sub.add_parser("prepare", help="两阶段审批：准备任务（选型不执行，落盘 data/tasks/，跨进程待 execute）")
     p_prep.add_argument("task", help="任务文本")
@@ -88,6 +108,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_prep.add_argument("--mock", action="store_true", help="使用 mock（无真实 key 也能演示）")
     p_prep.add_argument("--json", action="store_true", help="输出 JSON 结果（task_id 等）")
     p_prep.add_argument("--confirm", default="never", choices=["never", "once", "always"], help="确认策略：never 直接 ready；always/once 等待确认")
+    p_prep.add_argument("--session", default=None, help="会话 ID（命中会话偏好优先选型）")
+    p_prep.add_argument("--model", default=None, help="单次任务显式模型（优先级最高，覆盖会话偏好）")
+    p_prep.add_argument("--strict", action="store_true", help="硬限制：该模型失败不切换、直接失败")
 
     p_exec = sub.add_parser("execute", help="两阶段审批：执行已准备任务（批准/拒绝/过期校验，故障仍自动切换）")
     p_exec.add_argument("task_id", help="任务 ID（mso prepare 生成，形如 task-xxxxxxxxxxxx）")
@@ -344,7 +367,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         pause_path=pause_path,
         stats_path=stats_path,
     )
-    result = pipeline.run(args.task, prompt=args.prompt)
+    result = pipeline.run(
+        args.task,
+        prompt=args.prompt,
+        session_id=args.session,
+        preferred_model=args.model,
+        strict_model=args.strict,
+    )
 
     diagnosis: list[dict[str, Any]] = []
     if args.diagnose:
@@ -403,7 +432,14 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         _print_line(args.json, {"ok": False, "errors": [f"加载失败：{exc}"]})
         return 1
     pipeline = Pipeline(toolbox, confirm_mode=args.confirm)
-    info = pipeline.prepare(args.task, prompt=args.prompt, confirm_mode=args.confirm)
+    info = pipeline.prepare(
+        args.task,
+        prompt=args.prompt,
+        confirm_mode=args.confirm,
+        session_id=args.session,
+        preferred_model=args.model,
+        strict_model=args.strict,
+    )
 
     if args.json:
         _print_line(True, info)
@@ -421,6 +457,51 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         print(f"  状态：awaiting_confirmation（需人工确认）")
         print(f"  下一步：mso execute {info['task_id']} --confirm")
     return 0
+
+
+def cmd_model(args: argparse.Namespace) -> int:
+    """会话模型偏好（阶段4）：model use / model get / model auto。
+
+    本命令只校验模型清单 + 读写会话偏好，不调用任何模型，因此不依赖 mock/
+    真实 key；会话偏好落盘 cwd/data/sessions/（跨命令、跨进程共享）。
+    """
+    from .switcher import ModelSwitcher
+
+    try:
+        switcher = ModelSwitcher(Path(args.config), persist_events=False)
+    except ConfigError as exc:
+        _print_line(False, {"ok": False, "errors": [f"加载失败：{exc}"]})
+        return 1
+
+    if args.model_action == "use":
+        result = switcher.set_preferred_model(
+            args.session, args.model_ref, strict_model=args.strict
+        )
+        if not result.get("ok"):
+            print(f"设置失败：{result.get('error', '未知错误')}")
+            return 1
+        print(
+            f"会话偏好已设置：session={args.session} → {args.model_ref}"
+            + ("（strict 硬限制）" if args.strict else "")
+        )
+        return 0
+
+    if args.model_action == "get":
+        pref = switcher.get_preferred_model(args.session)
+        if pref["preferred_model"]:
+            print(
+                f"会话 {args.session} 偏好：{pref['preferred_model']}"
+                + ("（strict 硬限制）" if pref["strict_model"] else "")
+            )
+        else:
+            print(f"会话 {args.session} 无偏好（自动选择）")
+        return 0
+
+    if args.model_action == "auto":
+        switcher.clear_preferred_model(args.session)
+        print(f"已清除会话 {args.session} 偏好，恢复自动选择")
+        return 0
+    return 2
 
 
 def cmd_execute(args: argparse.Namespace) -> int:
@@ -873,6 +954,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_prepare(args)
     if args.command == "execute":
         return cmd_execute(args)
+    if args.command == "model":
+        return cmd_model(args)
     if args.command == "diagnose":
         return cmd_diagnose(args)
     if args.command == "history":

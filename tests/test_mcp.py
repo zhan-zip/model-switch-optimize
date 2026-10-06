@@ -29,6 +29,7 @@ EXPECTED_TOOLS = {
     "model_health",
     "apply_fix", "run",
     "prepare_run", "execute_run",
+    "set_preferred_model", "get_preferred_model", "clear_preferred_model",
 }
 
 

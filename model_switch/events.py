@@ -53,6 +53,8 @@ class EventType:
     TASK_APPROVED = "task_approved"
     TASK_DENIED = "task_denied"
     TASK_EXPIRED = "task_expired"
+    PREFERRED_MODEL_SET = "preferred_model_set"
+    PREFERRED_MODEL_CLEARED = "preferred_model_cleared"
     PIPELINE_FINISHED = "pipeline_finished"
 
 

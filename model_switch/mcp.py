@@ -3,7 +3,7 @@
 宿主配置（如 Claude Code 的 mcpServers）：
   {"mcpServers": {"mso": {"command": "mso", "args": ["mcp"]}}}
 
-暴露 14 个 tools：
+暴露 17 个 tools：
   六工具     call_model / list_models / test_connectivity / console_check /
              web_search / fault_history（dispatch 同款能力）
   三决策点   choose_model / plan_recovery / conclude_diagnosis
@@ -11,6 +11,8 @@
   修复       apply_fix（高危：宿主先向用户确认，经 user_confirmed=true 传入）
   闭环       run（托管宿主直接跑完整任务闭环）
   两阶段     prepare_run / execute_run（阶段3：网页/远程宿主可恢复审批流）
+  会话偏好   set_preferred_model / get_preferred_model / clear_preferred_model
+             （阶段4：网页/Agent 点击切换会话模型）
 
 人工确认协议（MCP 单向调用无反向通道）：高危操作由宿主先行向用户确认，
 确认后以 user_confirmed=true 调用；confirm_requested/granted 事件全程留痕。
@@ -205,14 +207,21 @@ def build_mcp_server(switcher: ModelSwitcher) -> FastMCP:
     # -- 两阶段审批（阶段3 可恢复审批流）--------------------------------------
 
     @mcp.tool()
-    def prepare_run(task: str, confirm_mode: str = "never") -> str:
+    def prepare_run(
+        task: str,
+        confirm_mode: str = "never",
+        session_id: str = "",
+    ) -> str:
         """两阶段：准备任务（选型不执行，落盘 data/tasks/ 供跨进程执行）
 
         返回 {ok, task_id, status, selected_model, reason, task_type, expires_at}；
         status = awaiting_confirmation（等确认）或 ready（自动批准）。
+        session_id 可选：命中会话偏好优先选型。
         """
         try:
-            info = switcher.prepare(task, confirm_mode=confirm_mode)
+            info = switcher.prepare(
+                task, confirm_mode=confirm_mode, session_id=session_id or None
+            )
         except Exception as exc:
             return _dumps({"ok": False, "error": str(exc)})
         return _dumps(info)
@@ -247,6 +256,32 @@ def build_mcp_server(switcher: ModelSwitcher) -> FastMCP:
                 "task_type": result.task_type,
             }
         )
+
+    # -- 会话模型偏好（阶段4）--------------------------------------------
+
+    @mcp.tool()
+    def set_preferred_model(
+        session_id: str, model_ref: str, strict_model: bool = False
+    ) -> str:
+        """设置会话偏好模型（软偏好）；strict=True 为硬限制（该模型失败不切换）。
+
+        准入校验：模型不存在/不可用/暂停中时拒绝且不落盘。
+        """
+        return _dumps(
+            switcher.set_preferred_model(
+                session_id, model_ref, strict_model=strict_model
+            )
+        )
+
+    @mcp.tool()
+    def get_preferred_model(session_id: str) -> str:
+        """查询会话偏好；未设置返回 preferred_model=None。"""
+        return _dumps(switcher.get_preferred_model(session_id))
+
+    @mcp.tool()
+    def clear_preferred_model(session_id: str) -> str:
+        """清除会话偏好（恢复自动选择）。"""
+        return _dumps(switcher.clear_preferred_model(session_id))
 
     return mcp
 

@@ -28,6 +28,7 @@ from .pipeline import Pipeline, RunResult
 from .model import DEFAULT_PAUSE_PATH
 from .prefs import DEFAULT_PREFS_PATH
 from .probe import DEFAULT_PROBE_DIR, ProbeQueue, probe_once, probe_watch
+from .session_store import DEFAULT_SESSIONS_DIR, clear_session, load_session, save_session
 from .stats import DEFAULT_STATS_PATH
 from .task_store import DEFAULT_TASKS_DIR
 from .tools import Toolbox
@@ -50,6 +51,7 @@ class ModelSwitcher:
         probe_dir: Path | str = DEFAULT_PROBE_DIR,
         persist_events: bool = True,
         tasks_dir: Path | str = DEFAULT_TASKS_DIR,
+        sessions_dir: Path | str = DEFAULT_SESSIONS_DIR,
     ):
         self.config = load_config(config_path)
         self.registry = ModelRegistry(self.config)
@@ -87,9 +89,16 @@ class ModelSwitcher:
 
             prefs_path = Path(tempfile.mkdtemp(prefix="mso-mock-prefs-")) / "model_prefs.md"
             pause_path = Path(tempfile.mkdtemp(prefix="mso-mock-pause-")) / "pause.json"
+            # 会话偏好影响后续选型决策（属影响运行态状态）：mock 默认走临时目录隔离；
+            # 但显式传入 sessions_dir 时尊重调用方（测试注入 tmp、宿主自定义存储）
+            if str(Path(sessions_dir)) == str(DEFAULT_SESSIONS_DIR):
+                sessions_dir = Path(tempfile.mkdtemp(prefix="mso-mock-sessions-"))
+            else:
+                sessions_dir = Path(sessions_dir)
         else:
             prefs_path = DEFAULT_PREFS_PATH
             pause_path = DEFAULT_PAUSE_PATH
+            sessions_dir = Path(sessions_dir)
         self.pipeline = Pipeline(
             self.toolbox,
             manager=self.manager,
@@ -98,15 +107,23 @@ class ModelSwitcher:
             pause_path=pause_path,
             stats_path=stats_path,
             tasks_dir=tasks_dir,
+            sessions_dir=sessions_dir,
         )
 
     # -- 闭环 ---------------------------------------------------------
 
-    def run(self, task: str, *, confirm_mode: str = "never", diagnose: bool = False) -> RunResult:
-        """完整闭环；diagnose=True 时故障后自动诊断相关服务商。"""
+    def run(
+        self,
+        task: str,
+        *,
+        confirm_mode: str = "never",
+        diagnose: bool = False,
+        session_id: str | None = None,
+    ) -> RunResult:
+        """完整闭环；diagnose=True 时故障后自动诊断相关服务商；session_id 命中会话偏好。"""
 
         self.pipeline.confirm_mode = confirm_mode
-        result = self.pipeline.run(task)
+        result = self.pipeline.run(task, session_id=session_id)
         if diagnose and self.stream is not None:
             fault_providers = sorted(
                 {
@@ -122,13 +139,28 @@ class ModelSwitcher:
                     continue  # 诊断失败不阻断结果返回
         return result
 
-    def prepare(self, task: str, *, confirm_mode: str = "never") -> dict[str, Any]:
+    def prepare(
+        self,
+        task: str,
+        *,
+        confirm_mode: str = "never",
+        session_id: str | None = None,
+        preferred_model: str | None = None,
+        strict_model: bool = False,
+    ) -> dict[str, Any]:
         """两阶段审批·准备：只选型不执行，任务状态落盘 data/tasks/。
 
         返回 {task_id, status, task_type, selected_model, reason, expires_at, ok}；
         status 为 awaiting_confirmation（等 execute 确认）或 ready（自动批准）。
+        session_id/preferred_model/strict_model：会话偏好接入（阶段4）。
         """
-        return self.pipeline.prepare(task, confirm_mode=confirm_mode)
+        return self.pipeline.prepare(
+            task,
+            confirm_mode=confirm_mode,
+            session_id=session_id,
+            preferred_model=preferred_model,
+            strict_model=strict_model,
+        )
 
     def execute(
         self,
@@ -195,3 +227,67 @@ class ModelSwitcher:
                 "paused": status is not None and status.is_paused(),
             }
         return result
+
+    # -- 会话模型偏好（阶段4）--------------------------------------------
+
+    def _preferred_sessions_dir(self):
+        return self.pipeline.sessions_dir
+
+    def set_preferred_model(
+        self,
+        session_id: str,
+        model_ref: str,
+        *,
+        strict_model: bool = False,
+    ) -> dict[str, Any]:
+        """设置会话偏好模型（软偏好）；strict=True 为硬限制（失败不切换）。
+
+        准入校验（8.2）：模型必须存在且当前可入选型（available 不能明确不可用 / 未暂停）。
+        校验失败返回 {"ok": False, "error": ...} 且不落盘、不发事件。
+        """
+        status = self.toolbox.registry.find(model_ref)
+        if status is None:
+            return {"ok": False, "error": f"模型不在清单内：{model_ref}"}
+        if status.available is False:
+            return {"ok": False, "error": f"模型当前不可用（已知故障或探测中）：{model_ref}"}
+        if status.is_paused():
+            return {"ok": False, "error": f"模型当前暂停中（冷却），不能作为会话偏好：{model_ref}"}
+        path = save_session(
+            session_id,
+            preferred_model=model_ref,
+            strict_model=strict_model,
+            sessions_dir=self._preferred_sessions_dir(),
+        )
+        if path is None:
+            return {"ok": False, "error": f"非法 session_id：{session_id}"}
+        self._emit_pref_event(
+            EventType.PREFERRED_MODEL_SET,
+            {"session_id": session_id, "model_ref": model_ref, "strict": bool(strict_model)},
+        )
+        return {
+            "ok": True,
+            "session_id": session_id,
+            "preferred_model": model_ref,
+            "strict_model": bool(strict_model),
+        }
+
+    def get_preferred_model(self, session_id: str) -> dict[str, Any]:
+        """查询会话偏好；未设置返回 preferred_model=None。"""
+        session = load_session(session_id, self._preferred_sessions_dir())
+        return {
+            "session_id": session_id,
+            "preferred_model": session.get("preferred_model") or None,
+            "strict_model": bool(session.get("strict_model", False)),
+        }
+
+    def clear_preferred_model(self, session_id: str) -> dict[str, Any]:
+        """清除会话偏好（恢复自动选择）。"""
+        cleared = clear_session(session_id, self._preferred_sessions_dir())
+        self._emit_pref_event(
+            EventType.PREFERRED_MODEL_CLEARED, {"session_id": session_id}
+        )
+        return {"ok": True, "session_id": session_id, "cleared": cleared}
+
+    def _emit_pref_event(self, type_: str, data: dict[str, Any]) -> None:
+        if self.stream is not None:
+            self.stream.emit(type_, data)
