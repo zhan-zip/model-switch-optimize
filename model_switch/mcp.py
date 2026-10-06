@@ -3,16 +3,18 @@
 宿主配置（如 Claude Code 的 mcpServers）：
   {"mcpServers": {"mso": {"command": "mso", "args": ["mcp"]}}}
 
-暴露 12 个 tools：
+暴露 14 个 tools：
   六工具     call_model / list_models / test_connectivity / console_check /
              web_search / fault_history（dispatch 同款能力）
   三决策点   choose_model / plan_recovery / conclude_diagnosis
   健康        model_health（阶段2：健康摘要查询）
   修复       apply_fix（高危：宿主先向用户确认，经 user_confirmed=true 传入）
   闭环       run（托管宿主直接跑完整任务闭环）
+  两阶段     prepare_run / execute_run（阶段3：网页/远程宿主可恢复审批流）
 
 人工确认协议（MCP 单向调用无反向通道）：高危操作由宿主先行向用户确认，
 确认后以 user_confirmed=true 调用；confirm_requested/granted 事件全程留痕。
+两阶段任务同样：宿主先向用户展示推荐模型与理由，确认后 execute_run(user_confirmed=true)。
 """
 from __future__ import annotations
 
@@ -196,6 +198,53 @@ def build_mcp_server(switcher: ModelSwitcher) -> FastMCP:
                 "switches": result.switches,
                 "error_class": result.error_class,
                 "trace_id": result.trace_id,
+                "task_type": result.task_type,
+            }
+        )
+
+    # -- 两阶段审批（阶段3 可恢复审批流）--------------------------------------
+
+    @mcp.tool()
+    def prepare_run(task: str, confirm_mode: str = "never") -> str:
+        """两阶段：准备任务（选型不执行，落盘 data/tasks/ 供跨进程执行）
+
+        返回 {ok, task_id, status, selected_model, reason, task_type, expires_at}；
+        status = awaiting_confirmation（等确认）或 ready（自动批准）。
+        """
+        try:
+            info = switcher.prepare(task, confirm_mode=confirm_mode)
+        except Exception as exc:
+            return _dumps({"ok": False, "error": str(exc)})
+        return _dumps(info)
+
+    @mcp.tool()
+    def execute_run(
+        task_id: str,
+        user_confirmed: bool = False,
+        model_ref: str = "",
+    ) -> str:
+        """两阶段：执行已准备任务（批准/拒绝/过期校验，故障仍自动切换）
+
+        user_confirmed=true 批准 awaiting 任务（宿主先展示推荐与理由、向用户确认，
+        语义与 apply_fix 高危门禁一致）；model_ref 可选覆盖推荐模型（重新校验）。
+        """
+        try:
+            result = switcher.execute(
+                task_id, user_confirmed=user_confirmed, model_override=model_ref or None
+            )
+        except Exception as exc:
+            return _dumps({"ok": False, "error": str(exc)})
+        return _dumps(
+            {
+                "ok": result.ok,
+                "outcome": result.outcome,
+                "model_ref": result.model_ref,
+                "text": result.text,
+                "attempts": result.attempts,
+                "switches": result.switches,
+                "error_class": result.error_class,
+                "trace_id": result.trace_id,
+                "task_type": result.task_type,
             }
         )
 

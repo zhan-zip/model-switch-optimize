@@ -13,6 +13,7 @@ data/auth/*
 data/faults/*
 data/events/*
 data/probe/*
+data/tasks/*
 data/pause.json
 data/stats.json
 !data/**/.gitkeep

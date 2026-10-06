@@ -35,6 +35,7 @@ def _switcher(tmp_path):
         mock=True,
         faults_dir=tmp_path / "faults",
         probe_dir=tmp_path / "probe",
+        tasks_dir=tmp_path / "tasks",
         persist_events=False,
     )
 

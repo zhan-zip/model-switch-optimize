@@ -28,6 +28,7 @@ EXPECTED_TOOLS = {
     "choose_model", "plan_recovery", "conclude_diagnosis",
     "model_health",
     "apply_fix", "run",
+    "prepare_run", "execute_run",
 }
 
 
@@ -37,6 +38,7 @@ def _server(tmp_path):
     switcher = ModelSwitcher(
         path, mock=True,
         faults_dir=tmp_path / "faults", probe_dir=tmp_path / "probe",
+        tasks_dir=tmp_path / "tasks",
         persist_events=False,
     )
     return build_mcp_server(switcher)

@@ -43,6 +43,18 @@ def test_mask_env_value():
     assert mask_env_value("abcdefghij123456") == "abcd****"
 
 
+def test_redact_keeps_task_id_plaintext():
+    """task_id（task-<12hex>）是两阶段审批公开关联键，不被 key 模式误伤。"""
+    task_id = "task-af4e7b852dbd"
+    assert redact_text(f"任务 {task_id} 已准备") == f"任务 {task_id} 已准备"
+    out = redact({"task_id": task_id})
+    assert out["task_id"] == task_id
+    # 相邻真实 key 仍正常脱敏
+    mixed = redact({"task_id": task_id, "api_key": "sk-abcdefghij123456"})
+    assert mixed["task_id"] == task_id
+    assert mixed["api_key"].endswith("****")
+
+
 def test_is_sensitive_name():
     assert is_sensitive_name("API_KEY")
     assert is_sensitive_name("Authorization")

@@ -1,8 +1,9 @@
 """CLI 入口：mso <command>。
 
-已实现（十三命令全齐）：
+已实现（十五命令全齐）：
 init（生成配置模板）· validate（校验配置）· tools（模型清单与状态）
-· init-check（onboarding）· run（完整闭环）· diagnose（手动诊断）
+· init-check（onboarding）· run（完整闭环）· prepare（两阶段：选型不执行）
+· execute（两阶段：执行已批准任务）· diagnose（手动诊断）
 · history（故障历史）· probe（周期探测）· auth（控制台账号）
 · pause（暂停模型）· resume（恢复模型）· stats（统计信息）· mcp（MCP server）。
 """
@@ -39,7 +40,7 @@ from .stats import DEFAULT_STATS_PATH, all_summaries
 from .tools import Toolbox
 from .websearch import default_web_search
 
-DATA_DIRS = ("data/auth", "data/faults", "data/events", "data/probe")
+DATA_DIRS = ("data/auth", "data/faults", "data/events", "data/probe", "data/tasks")
 
 _PENDING_COMMANDS: dict[str, str] = {}
 
@@ -79,6 +80,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--json", action="store_true", help="输出 JSON 事件流")
     p_run.add_argument("--diagnose", action="store_true", help="故障后自动诊断相关服务商（四项检查->结论）")
     p_run.add_argument("--confirm", default="never", choices=["never", "once", "always"], help="选型人工确认策略")
+
+    p_prep = sub.add_parser("prepare", help="两阶段审批：准备任务（选型不执行，落盘 data/tasks/，跨进程待 execute）")
+    p_prep.add_argument("task", help="任务文本")
+    p_prep.add_argument("--prompt", help="自定义 prompt（若提供，task 作为上下文拼接）")
+    p_prep.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
+    p_prep.add_argument("--mock", action="store_true", help="使用 mock（无真实 key 也能演示）")
+    p_prep.add_argument("--json", action="store_true", help="输出 JSON 结果（task_id 等）")
+    p_prep.add_argument("--confirm", default="never", choices=["never", "once", "always"], help="确认策略：never 直接 ready；always/once 等待确认")
+
+    p_exec = sub.add_parser("execute", help="两阶段审批：执行已准备任务（批准/拒绝/过期校验，故障仍自动切换）")
+    p_exec.add_argument("task_id", help="任务 ID（mso prepare 生成，形如 task-xxxxxxxxxxxx）")
+    p_exec.add_argument("--confirm", action="store_true", help="确认批准执行（awaiting_confirmation 任务必需）")
+    p_exec.add_argument("--model", default=None, help="覆盖推荐模型（重新校验存在/可用/未暂停）")
+    p_exec.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
+    p_exec.add_argument("--mock", action="store_true", help="使用 mock（无真实 key 也能演示）")
+    p_exec.add_argument("--json", action="store_true", help="输出 JSON 事件流")
 
     p_diag = sub.add_parser("diagnose", help="手动诊断服务商（四项检查->结论）")
     p_diag.add_argument("provider", help="服务商名称")
@@ -375,6 +392,86 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     print(f"（事件流已落盘 data/events/{stream.trace_id}.jsonl）")
     return 0 if result.ok else 1
+
+
+def cmd_prepare(args: argparse.Namespace) -> int:
+    """两阶段：准备任务（选型不执行，落盘 data/tasks/ 供跨进程 execute）。"""
+    try:
+        stream = EventStream(persist_dir=Path("data/events"))
+        toolbox = _pipeline_toolbox(args, stream)
+    except ConfigError as exc:
+        _print_line(args.json, {"ok": False, "errors": [f"加载失败：{exc}"]})
+        return 1
+    pipeline = Pipeline(toolbox, confirm_mode=args.confirm)
+    info = pipeline.prepare(args.task, prompt=args.prompt, confirm_mode=args.confirm)
+
+    if args.json:
+        _print_line(True, info)
+        return 0
+
+    print("任务已准备（两阶段审批·待执行）：")
+    print(f"  task_id：{info['task_id']}")
+    print(f"  推荐模型：{info['selected_model'] or '（决策全灭，执行时机械兜底）'}")
+    print(f"  任务类型：{info['task_type']}")
+    print(f"  有效期至：{info['expires_at']}")
+    if info["status"] == "ready":
+        print(f"  状态：ready（confirm={args.confirm}，自动批准）")
+        print(f"  下一步：mso execute {info['task_id']}")
+    else:
+        print(f"  状态：awaiting_confirmation（需人工确认）")
+        print(f"  下一步：mso execute {info['task_id']} --confirm")
+    return 0
+
+
+def cmd_execute(args: argparse.Namespace) -> int:
+    """两阶段：执行已准备任务（批准/拒绝/过期校验；覆盖模型重新校验）。"""
+    try:
+        stream = EventStream(persist_dir=Path("data/events"))
+        toolbox = _pipeline_toolbox(args, stream)
+    except ConfigError as exc:
+        _print_line(args.json, {"ok": False, "errors": [f"加载失败：{exc}"]})
+        return 1
+    pipeline = Pipeline(toolbox)
+    result = pipeline.execute(
+        args.task_id, user_confirmed=args.confirm, model_override=args.model
+    )
+
+    if args.json:
+        print(stream.to_json())
+        return 0 if result.ok else 1
+
+    titles = {
+        OUTCOME_OK: "一次成功",
+        OUTCOME_SWITCHED: "故障切换后完成（任务不中断）",
+        OUTCOME_FALLBACK: "机械兜底完成",
+    }
+    if result.ok:
+        print(f"任务结果：✓ {titles[result.outcome]}")
+        print(f"  最终模型：{result.model_ref}")
+        print(f"  尝试 {result.attempts} 次 · 切换 {result.switches} 次")
+        print("  最终回复：")
+        print(f"    {result.text.strip()[:500]}")
+    else:
+        print(f"任务结果：✗ {_execute_failure_text(result)}")
+        print(f"  尝试 {result.attempts} 次 · 切换 {result.switches} 次")
+    print(f"（事件流已落盘 data/events/{stream.trace_id}.jsonl）")
+    return 0 if result.ok else 1
+
+
+def _execute_failure_text(result) -> str:
+    if result.error_class == "denied":
+        return "任务已拒绝（未确认批准），不执行"
+    if result.error_class == "task_expired":
+        return "任务已过期（30 分钟有效期），不能执行"
+    if result.error_class == "not_reexecutable":
+        return "任务已终态，不能重复执行"
+    if result.error_class == "already_running":
+        return "任务正在执行中，禁止并发执行"
+    if result.error_class == "invalid_override":
+        return f"覆盖模型校验失败：{result.text}"
+    if result.error_class == "not_found":
+        return "任务不存在（data/tasks/ 中未找到）"
+    return f"全部模型不可用（最后错误 [{result.error_class}]）"
 
 
 def cmd_diagnose(args: argparse.Namespace) -> int:
@@ -772,6 +869,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_init_check(args)
     if args.command == "run":
         return cmd_run(args)
+    if args.command == "prepare":
+        return cmd_prepare(args)
+    if args.command == "execute":
+        return cmd_execute(args)
     if args.command == "diagnose":
         return cmd_diagnose(args)
     if args.command == "history":

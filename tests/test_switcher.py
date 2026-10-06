@@ -21,6 +21,7 @@ fallback: { provider: b, group: g1, model: m3, key_env: KEY_B }
 def _switcher(tmp_path, persist_events=False, **kwargs):
     path = tmp_path / "models.yaml"
     path.write_text(VALID_YAML, encoding="utf-8")
+    kwargs.setdefault("tasks_dir", tmp_path / "tasks")
     return ModelSwitcher(
         path,
         mock=True,

@@ -49,6 +49,10 @@ class EventType:
     ONBOARDING_PROFILE = "onboarding_profile"
     ONBOARDING_PROFILE_CONFIRMED = "onboarding_profile_confirmed"
     ONBOARDING_LABELS_SAVED = "onboarding_labels_saved"
+    TASK_PREPARED = "task_prepared"
+    TASK_APPROVED = "task_approved"
+    TASK_DENIED = "task_denied"
+    TASK_EXPIRED = "task_expired"
     PIPELINE_FINISHED = "pipeline_finished"
 
 

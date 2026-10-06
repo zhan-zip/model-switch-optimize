@@ -16,6 +16,7 @@
 - 故障模型恢复探测
 - 切换偏好记忆，减少重复决策
 - 调用统计与健康状态（成功率、错误分布、延迟分位、Token、健康分级）
+- 两阶段审批：先准备（选型待确认），批准后再执行，支持网页和远程宿主跨进程审批
 - CLI、Python、Agent 和 MCP 多种接入方式
 - 支持用户使用自己的模型地址和 API key
 
@@ -115,7 +116,8 @@ mso run "总结这段文本"
 | Python 项目 | `from model_switch import ModelSwitcher` |
 | Agent 托管模式 | Agent 调用 `run()`，由中间件负责选型和切换 |
 | Agent 自决策模式 | 使用 `dispatch()` 调用六个基础工具 |
-| MCP 宿主 | 启动 `mso mcp`，通过 MCP tools 接入 |
+| 网页 / 异步宿主 | `mso prepare --json` + `mso execute <task_id> --json` 两阶段审批 |
+| MCP 宿主 | 启动 `mso mcp`，通过 MCP tools 接入（含 `prepare_run` / `execute_run`） |
 
 ## 任务结果
 
@@ -138,6 +140,30 @@ text = finished["data"]["text"]
 | `switched` | 发生模型切换后成功 |
 | `fallback` | 进入机械兜底后成功 |
 | `failed` | 所有候选模型都失败 |
+
+## 两阶段审批（人工确认）
+
+`mso run` 是一调用完成的快捷方式。如果需要在执行前由用户确认推荐模型（网页界面、远程宿主或异步流程），可以使用两阶段命令：
+
+```bash
+mso prepare "写一个爬虫" --confirm always --json   # 只选型，不执行
+mso execute <task_id> --confirm --json             # 用户批准后执行
+```
+
+- `mso prepare` 返回 `task_id`、推荐模型、任务类型、选择理由和有效期（默认 30 分钟），任务状态落盘 `data/tasks/`。
+- 确认策略：`--confirm never` 直接准备就绪（执行时无需确认）；`once` 首次确认后记忆；`always` 每次等待确认。
+- `mso execute` 校验任务状态：未确认的任务会被拒绝（`denied`），过期任务不能执行（`task_expired`），已执行过的任务不能重复执行；已确认模型执行失败时仍会自动切换，不中断任务。
+- 执行时可用 `--model <完整引用>` 覆盖推荐模型（覆盖值会重新校验：必须存在、可用且未暂停）。
+- `prepare` 和 `execute` 可以在不同进程执行，`task_id` 是跨进程的关联键。
+
+Python 项目：
+
+```python
+info = switcher.prepare("写一个爬虫", confirm_mode="always")
+result = switcher.execute(info["task_id"], user_confirmed=True)
+```
+
+MCP 宿主可调用 `prepare_run` 和 `execute_run` 完成同样的流程（先向用户展示推荐模型与理由，确认后以 `user_confirmed=true` 调用执行）。
 
 ## 故障处理
 

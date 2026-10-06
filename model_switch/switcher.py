@@ -29,6 +29,7 @@ from .model import DEFAULT_PAUSE_PATH
 from .prefs import DEFAULT_PREFS_PATH
 from .probe import DEFAULT_PROBE_DIR, ProbeQueue, probe_once, probe_watch
 from .stats import DEFAULT_STATS_PATH
+from .task_store import DEFAULT_TASKS_DIR
 from .tools import Toolbox
 from .websearch import default_web_search
 
@@ -48,6 +49,7 @@ class ModelSwitcher:
         faults_dir: Path | str = "data/faults",
         probe_dir: Path | str = DEFAULT_PROBE_DIR,
         persist_events: bool = True,
+        tasks_dir: Path | str = DEFAULT_TASKS_DIR,
     ):
         self.config = load_config(config_path)
         self.registry = ModelRegistry(self.config)
@@ -95,6 +97,7 @@ class ModelSwitcher:
             prefs_path=prefs_path,
             pause_path=pause_path,
             stats_path=stats_path,
+            tasks_dir=tasks_dir,
         )
 
     # -- 闭环 ---------------------------------------------------------
@@ -118,6 +121,29 @@ class ModelSwitcher:
                 except DecisionError:
                     continue  # 诊断失败不阻断结果返回
         return result
+
+    def prepare(self, task: str, *, confirm_mode: str = "never") -> dict[str, Any]:
+        """两阶段审批·准备：只选型不执行，任务状态落盘 data/tasks/。
+
+        返回 {task_id, status, task_type, selected_model, reason, expires_at, ok}；
+        status 为 awaiting_confirmation（等 execute 确认）或 ready（自动批准）。
+        """
+        return self.pipeline.prepare(task, confirm_mode=confirm_mode)
+
+    def execute(
+        self,
+        task_id: str,
+        *,
+        user_confirmed: bool = False,
+        model_override: str | None = None,
+    ) -> RunResult:
+        """两阶段审批·执行：校验状态 -> 批准/拒绝/过期 -> 执行（故障仍自动切换）。
+
+        user_confirmed=true 批准 awaiting 任务；model_override 覆盖推荐模型（重新校验）。
+        """
+        return self.pipeline.execute(
+            task_id, user_confirmed=user_confirmed, model_override=model_override
+        )
 
     # -- 直通接口 ------------------------------------------------------
 

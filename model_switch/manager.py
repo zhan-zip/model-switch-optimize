@@ -35,6 +35,9 @@ ConfirmHandler = Callable[[str, str, str], bool]  # (operation, reason, evidence
 
 _STATE_TEXT = {True: "可用", False: "不可用", None: "未测"}
 
+# 5.1 任务类型（阶段3）：决策输出可带可选 task_type；缺失或未知按 general
+TASK_TYPES = ("general", "code", "reasoning", "structured", "language", "vision", "tool_use")
+
 CHOOSE_PROMPT = """\
 你是模型选型决策者。根据以下信息为任务选出最合适的一个模型。
 
@@ -45,7 +48,7 @@ CHOOSE_PROMPT = """\
 {extra}
 
 只输出一个 JSON 对象（不要 markdown 代码块、不要任何其他文字）：
-{{"model": "<清单中的模型完整引用，照抄清单写法>", "reason": "<一句话理由>"}}"""
+{{"model": "<清单中的模型完整引用，照抄清单写法>", "task_type": "<可选：任务类型 code|reasoning|structured|language|vision|tool_use，难以归类或不确定则省略>", "reason": "<一句话理由>"}}"""
 
 PLAN_PROMPT = """\
 你是故障切换决策者。一个模型调用失败，需要立刻选一个模型顶上（任务不中断），并判断是否需要后台诊断。
@@ -230,6 +233,13 @@ class DecisionManager:
             return ""
 
         decision = self.decide("choose_model", prompt, validator=validator)
+        # task_type 可选字段：缺失或未知一律按 general（兼容规则，不阻断决策）
+        data = dict(decision.decision)
+        task_type = str(data.get("task_type", "")).strip().lower()
+        if task_type not in TASK_TYPES:
+            task_type = "general"
+        data["task_type"] = task_type
+        decision = replace(decision, decision=data)
         confirmed: bool | None = None
         if confirm_mode == "always":
             confirmed = self._confirm(decision)
