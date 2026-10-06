@@ -354,7 +354,7 @@ class DecisionManager:
     # -- 上下文组装 ---------------------------------------------------
 
     def _model_table(self, prefs: dict[str, dict[str, str]]) -> str:
-        """选型模型表：状态/标签/延迟 + 经验分（样本不足不显示，阶段6 增强项 ③）。"""
+        """选型模型表：状态/标签/延迟 + 经验分 + 健康摘要（样本不足不显示，阶段2 注入）。"""
 
         labels = prefs.get("model_labels", {})
         try:
@@ -367,8 +367,25 @@ class DecisionManager:
             exp = summary(str(status.ref), stats=stats)
             if exp is not None:
                 line += f" | 经验: 近{exp['n']}次 成功率{exp['rate']}% 均耗时{exp['avg_latency_ms']}ms"
+            health = self._health_hint(str(status.ref), stats)
+            if health is not None:
+                line += f" | 健康: {health}"
             lines.append(line)
         return "\n".join(lines)
+
+    def _health_hint(self, ref: str, stats: dict) -> str | None:
+        """选型注入健康摘要（阶段2）：样本不足返回 None 不显示；暂停状态已由状态列体现不重复。"""
+
+        from .stats import health_status, health_summary
+
+        h = health_summary(ref, stats=stats)
+        if h is None:
+            return None
+        status = self.toolbox.registry.find(ref)
+        if status is not None and status.is_paused():
+            return None  # 暂停中已由 _status_line 显示，健康列不重复
+        hs = health_status(ref, stats=stats)
+        return f"status={hs} rate={h['rate']}% fail={h['fail_n']}"
 
     def _status_line(self, status: Any, labels: dict[str, str]) -> str:
         label = labels.get(str(status.ref), "-")

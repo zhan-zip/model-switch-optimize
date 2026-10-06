@@ -15,6 +15,7 @@
 - 模型暂停与冷却
 - 故障模型恢复探测
 - 切换偏好记忆，减少重复决策
+- 调用统计与健康状态（成功率、错误分布、延迟分位、Token、健康分级）
 - CLI、Python、Agent 和 MCP 多种接入方式
 - 支持用户使用自己的模型地址和 API key
 
@@ -159,6 +160,32 @@ mso probe
 ```
 
 宿主 Agent 可以在后台自行调度 `diagnose` 和 `probe`。中间件本体不会自动启动后台 Agent 或后台线程。
+
+## 统计与健康状态
+
+查看各模型的调用统计和健康状态：
+
+```bash
+mso stats
+mso stats --json
+```
+
+`--json` 输出带版本的健康摘要，适合网页或其他宿主程序读取。每个模型包含：
+
+- `summary`：样本数、成功率、连续成功/失败、错误分布、平均耗时、P50/P95 延迟和 Token 汇总。
+- `health`：健康分级（`unknown` / `healthy` / `degraded` / `unhealthy` / `paused`）。
+- `paused`：是否处于暂停（冷却）状态。
+
+Python 项目可以直接调用：
+
+```python
+health = switcher.health()                  # 全部模型
+health = switcher.health("my-provider/main/model-a")  # 单个模型
+```
+
+MCP 宿主可以调用 `model_health` 工具查询同样的结果。
+
+健康状态只用于展示和选型参考，不会自动暂停或禁用模型。
 
 ## 接口要求
 

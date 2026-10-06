@@ -112,7 +112,9 @@ class Pipeline:
         while True:
             attempts += 1
             result = self.toolbox.call_model(current, [{"role": "user", "content": actual_task}])
-            self._record_stats(current, result.ok, result.latency_ms, switches)
+            self._record_stats(
+                current, result, switches, call_kind="task", task_type="general"
+            )
             if result.ok:
                 # 切换后成功：沉淀切换偏好（同错类下次程序直切；失败不阻断结果返回）
                 if switches > 0 and last_switch_error:
@@ -173,7 +175,9 @@ class Pipeline:
         for ref in candidates:
             attempts += 1
             call = self.toolbox.call_model(ref, [{"role": "user", "content": task}])
-            self._record_stats(ref, call.ok, call.latency_ms, switches)
+            self._record_stats(
+                ref, call, switches, call_kind="task", task_type="general"
+            )
             results[ref] = {"ok": call.ok, "error_class": "" if call.ok else call.error_class}
             if call.ok:
                 self._emit(
@@ -241,11 +245,38 @@ class Pipeline:
             {"model_ref": model_ref, "seconds": seconds, "reason": reason},
         )
 
-    def _record_stats(self, model_ref: str, ok: bool, latency_ms: int, switches: int) -> None:
-        """记录一次模型调用结果（滚动窗口经验分）；写盘失败不阻断主流程。"""
+    def _record_stats(
+        self,
+        model_ref: str,
+        result: Any,
+        switches: int,
+        *,
+        call_kind: str,
+        task_type: str,
+    ) -> None:
+        """记录一次模型调用结果（滚动窗口经验分）；写盘失败不阻断主流程。
+
+        阶段2：写入 v2 对象记录，包含错误类别、协议、Token（缺失为 None）。
+        """
 
         try:
-            record_run(model_ref, ok, latency_ms, switches, self.stats_path)
+            status = self.toolbox.registry.find(model_ref)
+            protocol = status.protocol if status is not None else "openai_chat"
+            usage = result.usage or {}
+            record_run(
+                model_ref,
+                result.ok,
+                result.latency_ms,
+                switches,
+                self.stats_path,
+                call_kind=call_kind,
+                task_type=task_type,
+                protocol=protocol,
+                error_class=None if result.ok else (result.error_class or None),
+                input_tokens=usage.get("prompt_tokens") or usage.get("input_tokens"),
+                output_tokens=usage.get("completion_tokens") or usage.get("output_tokens"),
+                total_tokens=usage.get("total_tokens"),
+            )
         except OSError:
             pass
 

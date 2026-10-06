@@ -50,9 +50,9 @@ def test_record_rolls_window(tmp_path):
         record_run("a/g1/m1", True, 100 + i, 0, path)
     entry = load_stats(path)["a/g1/m1"]["recent"]
     assert len(entry) == WINDOW  # 滚动窗口裁剪
-    # 保留最近 WINDOW 次（100+5 .. 100+24）
-    assert entry[0][1] == 105
-    assert entry[-1][1] == 100 + WINDOW + 4
+    # 保留最近 WINDOW 次（100+5 .. 100+24）；v2 记录为对象，latency 走字段
+    assert entry[0]["latency_ms"] == 105
+    assert entry[-1]["latency_ms"] == 100 + WINDOW + 4
 
 
 def test_load_stats_missing_or_corrupt(tmp_path):

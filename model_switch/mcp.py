@@ -3,10 +3,11 @@
 宿主配置（如 Claude Code 的 mcpServers）：
   {"mcpServers": {"mso": {"command": "mso", "args": ["mcp"]}}}
 
-暴露 11 个 tools：
+暴露 12 个 tools：
   六工具     call_model / list_models / test_connectivity / console_check /
              web_search / fault_history（dispatch 同款能力）
   三决策点   choose_model / plan_recovery / conclude_diagnosis
+  健康        model_health（阶段2：健康摘要查询）
   修复       apply_fix（高危：宿主先向用户确认，经 user_confirmed=true 传入）
   闭环       run（托管宿主直接跑完整任务闭环）
 
@@ -175,6 +176,11 @@ def build_mcp_server(switcher: ModelSwitcher) -> FastMCP:
         return _dumps(result)
 
     # -- 完整闭环（托管宿主） ------------------------------------------------
+
+    @mcp.tool()
+    def model_health(model_ref: str = "") -> str:
+        """健康摘要查询（阶段2）：省略 model_ref 返回全部模型。"""
+        return _dumps(switcher.health(model_ref or None))
 
     @mcp.tool()
     def run(task: str, confirm_mode: str = "never") -> str:

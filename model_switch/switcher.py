@@ -63,26 +63,31 @@ class ModelSwitcher:
             console = MockConsole()
         if web_search_impl is None:
             web_search_impl = MockWebSearch().search if mock else default_web_search
+        # mock 演示：切换偏好/暂停表/统计只写临时文件，不污染真实运行态
+        if mock:
+            import tempfile
+
+            stats_path = Path(tempfile.mkdtemp(prefix="mso-mock-stats-")) / "stats.json"
+        else:
+            stats_path = DEFAULT_STATS_PATH
         self.toolbox = Toolbox(
             self.config, self.registry, self.stream,
             model_client=model_client or call_openai_compatible,
             console=console,
             web_search_impl=web_search_impl,
             faults_dir=Path(faults_dir),
+            stats_path=stats_path,
             mock=mock,
         )
         self.manager = DecisionManager(self.toolbox, confirm_handler=confirm_handler)
-        # mock 演示：切换偏好/暂停表/统计只写临时文件，不污染真实运行态
         if mock:
             import tempfile
 
             prefs_path = Path(tempfile.mkdtemp(prefix="mso-mock-prefs-")) / "model_prefs.md"
             pause_path = Path(tempfile.mkdtemp(prefix="mso-mock-pause-")) / "pause.json"
-            stats_path = Path(tempfile.mkdtemp(prefix="mso-mock-stats-")) / "stats.json"
         else:
             prefs_path = DEFAULT_PREFS_PATH
             pause_path = DEFAULT_PAUSE_PATH
-            stats_path = DEFAULT_STATS_PATH
         self.pipeline = Pipeline(
             self.toolbox,
             manager=self.manager,
@@ -139,3 +144,28 @@ class ModelSwitcher:
         """三决策点直通：选型。"""
 
         return self.manager.choose_model(task, confirm_mode=confirm_mode)
+
+    def health(self, model_ref: str | None = None) -> dict[str, Any]:
+        """健康摘要查询（阶段2）：model_ref 省略返回全部模型。
+
+        返回 {model_ref: {summary, health, paused}}；无记录模型 summary 为 None、health=unknown。
+        """
+
+        from .stats import DEFAULT_STATS_PATH, health_status, health_summary, load_stats
+
+        try:
+            stats = load_stats(self.pipeline.stats_path or DEFAULT_STATS_PATH)
+        except OSError:
+            stats = {}
+        refs = [model_ref] if model_ref else [str(s.ref) for s in self.toolbox.registry.all()]
+        result: dict[str, Any] = {}
+        for ref in refs:
+            status = self.toolbox.registry.find(ref)
+            summary_dict = health_summary(ref, stats=stats)
+            health = health_status(ref, stats=stats)
+            result[ref] = {
+                "summary": summary_dict,
+                "health": "paused" if (status is not None and status.is_paused()) else health,
+                "paused": status is not None and status.is_paused(),
+            }
+        return result

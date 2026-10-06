@@ -408,8 +408,14 @@ def test_run_records_stats_per_model(tmp_path):
     pipeline.run("写个爬虫")  # m1 失败 401 -> 切 m2 成功
 
     stats = load_stats(stats_path)
-    assert stats["a/g1/m1"]["recent"] == [[False, 42, 0]]  # 失败调用也记录
-    assert stats["a/g1/m2"]["recent"] == [[True, 42, 1]]  # 成功 + 切换数 1
+    assert stats["a/g1/m1"]["recent"][0]["ok"] is False  # 失败调用也记录
+    assert stats["a/g1/m1"]["recent"][0]["latency_ms"] == 42
+    assert stats["a/g1/m1"]["recent"][0]["error_class"] == "401"  # v2：错误类别入档
+    assert stats["a/g1/m1"]["recent"][0]["call_kind"] == "task"
+    assert stats["a/g1/m1"]["recent"][0]["protocol"] == "openai_chat"
+    assert stats["a/g1/m2"]["recent"][0]["ok"] is True  # 成功 + 切换数 1
+    assert stats["a/g1/m2"]["recent"][0]["switches"] == 1
+    assert stats["a/g1/m2"]["recent"][0]["error_class"] is None
     # 单次样本：summary 门槛内返回 None
     assert summary("a/g1/m1", stats=stats) is None
     assert summary("a/g1/m2", stats=stats) is None
@@ -426,5 +432,5 @@ def test_run_mechanical_records_stats(tmp_path):
     pipeline.run("任务")  # 兜底：m3 决策调用失败（不记）-> m1 兜底成功（记）
 
     stats = load_stats(stats_path)
-    assert stats["a/g1/m1"]["recent"][0][0] is True  # 兜底成功记 m1
+    assert stats["a/g1/m1"]["recent"][0]["ok"] is True  # 兜底成功记 m1
     assert "b/g1/m3" not in stats  # 决策调用不记（非任务执行）

@@ -73,6 +73,7 @@ class Toolbox:
         console: Any = None,
         web_search_impl: Callable[[str], dict[str, Any]] | None = None,
         faults_dir: Path = FAULTS_DIR,
+        stats_path: Path | str | None = None,
         mock: bool = False,
     ):
         self.config = config
@@ -82,6 +83,7 @@ class Toolbox:
         self._console = console
         self._web_search_impl = web_search_impl
         self._faults_dir = Path(faults_dir)
+        self._stats_path = Path(stats_path) if stats_path else None
         self.mock = mock  # mock 模式：跳过 key 检查（无真实 key 也能跑通全闭环）
 
     # -- 模型调用 ----------------------------------------------------
@@ -201,6 +203,7 @@ class Toolbox:
             else:
                 # 真实模式：使用协议适配器
                 result = test_connectivity(status, timeout=timeout)
+            self._record_probe_stats(status, result)
             self.registry.update(
                 ref_str,
                 available=result.ok,
@@ -291,6 +294,35 @@ class Toolbox:
         return {"tool": name, "ok": False, "result": {"error": f"未知工具：{name}"}}
 
     # -- 内部 ---------------------------------------------------------
+
+    def _record_probe_stats(self, status: ModelStatus, result: CallResult) -> None:
+        """探测调用写入统计（call_kind=probe）；mock 模式不写（零污染真实运行态）。
+
+        阶段2：探测用途与任务统计隔离；未配置 stats_path 时跳过。
+        """
+
+        if self.mock or self._stats_path is None:
+            return
+        try:
+            from .stats import record_run
+
+            usage = result.usage or {}
+            record_run(
+                str(status.ref),
+                result.ok,
+                result.latency_ms,
+                0,
+                self._stats_path,
+                call_kind="probe",
+                task_type="general",
+                protocol=status.protocol,
+                error_class=None if result.ok else (result.error_class or None),
+                input_tokens=usage.get("prompt_tokens") or usage.get("input_tokens"),
+                output_tokens=usage.get("completion_tokens") or usage.get("output_tokens"),
+                total_tokens=usage.get("total_tokens"),
+            )
+        except OSError:
+            pass
 
     def _emit(self, type_: str, data: dict[str, Any]) -> None:
         if self.stream is not None:

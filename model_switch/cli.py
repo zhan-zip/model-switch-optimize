@@ -116,6 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_stats = sub.add_parser("stats", help="查看 run 统计（各模型近 20 次成功率/耗时，样本不足不显示）")
     p_stats.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
+    p_stats.add_argument("--json", action="store_true", help="输出健康摘要 JSON（阶段2）")
 
     p_mcp = sub.add_parser("mcp", help="启动 MCP server（stdio，供 MCP 宿主零代码接入）")
     p_mcp.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
@@ -629,10 +630,23 @@ def cmd_stats(args: argparse.Namespace) -> int:
     except ConfigError as exc:
         print(f"加载失败：{exc}")
         return 1
-    from .stats import load_stats
+    from .stats import health_summary, health_status, load_stats
 
     stats = load_stats()
-    rows = all_summaries([str(ref) for ref in config.iter_model_refs()], stats=stats)
+    refs = [str(ref) for ref in config.iter_model_refs()]
+    if args.json:
+        models: dict[str, dict[str, Any]] = {}
+        for ref in refs:
+            status = ("paused" if _registry_paused(config, ref) else health_status(ref, stats=stats))
+            summary_dict = health_summary(ref, stats=stats)
+            models[ref] = {
+                "summary": summary_dict,
+                "health": "paused" if _registry_paused(config, ref) else health_status(ref, stats=stats),
+                "paused": _registry_paused(config, ref),
+            }
+        _print_line(True, {"version": 2, "models": models})
+        return 0
+    rows = all_summaries(refs, stats=stats)
     if not any(rows.values()):
         # 统计总记录数以区分"完全没数据"和"有数据但样本不足"
         total_records = sum(len(entry.get("recent", [])) for entry in stats.values())
@@ -646,10 +660,29 @@ def cmd_stats(args: argparse.Namespace) -> int:
         if exp is None:
             print(f"  {ref}  样本不足（<3 次）")
         else:
+            health_label = _health_label(ref, stats)
             print(
-                f"  {ref}  近{exp['n']}次 · 成功率 {exp['rate']}% · 成功均耗时 {exp['avg_latency_ms']}ms"
+                f"  {ref}  近{exp['n']}次 · 成功率 {exp['rate']}% · "
+                f"成功均耗时 {exp['avg_latency_ms']}ms · 健康 {health_label}"
             )
     return 0
+
+
+def _registry_paused(config, model_ref: str) -> bool:
+    """判断模型是否处于暂停（冷却）状态（仅用于 stats --json 展示 paused）。"""
+    from .model import load_pause_state
+
+    pauses = load_pause_state()
+    return model_ref in pauses
+
+
+def _health_label(ref: str, stats) -> str:
+    from .model import load_pause_state
+    from .stats import health_status
+
+    if ref in load_pause_state():
+        return "暂停中"
+    return health_status(ref, stats=stats)
 
 
 def cmd_init_check(args: argparse.Namespace) -> int:
