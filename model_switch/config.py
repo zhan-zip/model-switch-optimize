@@ -16,6 +16,9 @@ import yaml
 
 DEFAULT_CONFIG_PATH = Path("config/models.yaml")
 
+# 模型能力白名单（能力检测方案C）：models[].capabilities 只允许这些值
+CAPABILITY_WHITELIST = ("vision", "tool_use", "structured_output")
+
 CONFIG_TEMPLATE = """\
 # ============================================================
 # 多模型降级自修复管理系统 · 模型配置
@@ -34,6 +37,11 @@ providers:
       - name: default                   # 分组名称（自定义）
         key_env: KEY_A                  # 存放该分组 key 的环境变量名
         models: [gpt-4o, gpt-4o-mini]   # 该分组下可用的模型
+        # 也可声明式指定模型能力（可选，避免为该模型发起能力探测调用）：
+        # models:
+        #   - gpt-4o
+        #   - name: my-private-model
+        #     capabilities: [vision, tool_use]   # 可选值：vision / tool_use / structured_output
 
   - name: provider-b
     base_url: https://your-provider-b.example.com/v1
@@ -58,11 +66,20 @@ class ConfigError(Exception):
 
 @dataclass(frozen=True)
 class Group:
-    """一个 key 分组：同一 key_env 下的若干模型。"""
+    """一个 key 分组：同一 key_env 下的若干模型。
+
+    models 为模型名元组（配置顺序即机械兜底顺序）；
+    model_caps 为用户显式声明的能力 {模型名: (能力, ...)}（可选，declared 层）。
+    """
 
     name: str
     key_env: str
     models: tuple[str, ...]
+    model_caps: dict[str, tuple[str, ...]] = None
+
+    def __post_init__(self):
+        if self.model_caps is None:
+            object.__setattr__(self, "model_caps", {})
 
 
 @dataclass(frozen=True)
@@ -281,8 +298,40 @@ def _build_provider(index: int, raw: Any) -> Provider:
         models_raw = g_raw.get("models")
         if not isinstance(models_raw, list) or not models_raw:
             raise ConfigError(f"[{name}] groups[{gi}]（{g_name}）models 必须是非空列表")
-        models = tuple(str(m).strip() for m in models_raw if str(m).strip())
+        models: list[str] = []
+        model_caps: dict[str, tuple[str, ...]] = {}
+        for m_raw in models_raw:
+            if isinstance(m_raw, dict):
+                # 声明式元素：{name: 模型名, capabilities: [能力, ...]}（可选声明）
+                m_name = str(m_raw.get("name", "")).strip()
+                if not m_name:
+                    raise ConfigError(
+                        f"[{name}] groups[{gi}]（{g_name}）声明式模型缺少 name 字段"
+                    )
+                caps_raw = m_raw.get("capabilities")
+                if caps_raw is None:
+                    caps: tuple[str, ...] = ()
+                elif isinstance(caps_raw, list):
+                    caps = tuple(str(c).strip() for c in caps_raw if str(c).strip())
+                else:
+                    raise ConfigError(
+                        f"[{name}] groups[{gi}]（{g_name}）模型 {m_name} 的 capabilities 必须是列表"
+                    )
+                bad = [c for c in caps if c not in CAPABILITY_WHITELIST]
+                if bad:
+                    raise ConfigError(
+                        f"[{name}] groups[{gi}]（{g_name}）模型 {m_name} 未知能力："
+                        f"{', '.join(bad)}（当前支持：{', '.join(CAPABILITY_WHITELIST)}）"
+                    )
+                models.append(m_name)
+                model_caps[m_name] = caps
+            else:
+                # 旧格式：纯字符串模型名（零改动兼容）
+                m_name = str(m_raw).strip()
+                if m_name:
+                    models.append(m_name)
+        models = tuple(models)
         if not models:
             raise ConfigError(f"[{name}] groups[{gi}]（{g_name}）models 不能为空")
-        groups.append(Group(name=g_name, key_env=g_key, models=models))
+        groups.append(Group(name=g_name, key_env=g_key, models=models, model_caps=model_caps))
     return Provider(name=name, base_url=base_url, groups=tuple(groups), protocol=protocol, options=options)

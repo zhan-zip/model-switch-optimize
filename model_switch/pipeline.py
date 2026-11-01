@@ -17,6 +17,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from .events import EventType
+from .capability import (
+    DEFAULT_CAPABILITIES_PATH,
+    TASK_TYPE_CAPABILITY,
+    capability_value,
+    load_capabilities,
+)
 from .history import DEFAULT_FAULTS_DIR, FaultRecorder
 from .manager import DecisionError, DecisionManager
 from .model import DEFAULT_PAUSE_PATH, load_pause_state, prune_pause_state, restore_pause_state, save_pause_state
@@ -101,6 +107,7 @@ class Pipeline:
         stats_path: Any = DEFAULT_STATS_PATH,
         tasks_dir: Any = DEFAULT_TASKS_DIR,
         sessions_dir: Any = DEFAULT_SESSIONS_DIR,
+        capabilities_path: Any = DEFAULT_CAPABILITIES_PATH,
     ):
         self.toolbox = toolbox
         self.confirm_mode = confirm_mode
@@ -111,6 +118,7 @@ class Pipeline:
         self.stats_path = stats_path
         self.tasks_dir = tasks_dir
         self.sessions_dir = sessions_dir
+        self.capabilities_path = capabilities_path
         self.recorder = recorder or FaultRecorder(toolbox.stream, faults_dir=faults_dir)
         self.probe_queue = probe_queue if probe_queue is not None else ProbeQueue(probe_dir)
 
@@ -474,7 +482,12 @@ class Pipeline:
             if switches >= self.max_switches:
                 return self._mechanical(task, failed, attempts, switches, trace_id, last_error, task_type)
             try:
-                plan = mgr.plan_recovery(current, result.error_class, detail=result.detail)
+                plan = mgr.plan_recovery(
+                    current,
+                    result.error_class,
+                    detail=result.detail,
+                    required_capability=TASK_TYPE_CAPABILITY.get(task_type),
+                )
                 target = str(plan.decision["switch_to"])
             except DecisionError:
                 return self._mechanical(task, failed, attempts, switches, trace_id, last_error, task_type)
@@ -507,12 +520,25 @@ class Pipeline:
         last_error: str = "",
         task_type: str = "general",
     ) -> RunResult:
-        """按配置顺序逐个试调（跳过已失败者）；首个成功即用，全败报错。"""
+        """按配置顺序逐个试调（跳过已失败者）；首个成功即用，全败报错。
 
+        能力检测方案C：任务所需能力确认不支持的模型排除出候选
+        （与选型/切换过滤同语义；未测放行）。
+        """
+
+        need = TASK_TYPE_CAPABILITY.get(task_type)
+        try:
+            caps_store = load_capabilities(self.capabilities_path)
+        except OSError:
+            caps_store = {}
         candidates = [
             str(status.ref)
             for status in self.toolbox.registry.all()
-            if str(status.ref) not in failed and not status.is_paused()
+            if str(status.ref) not in failed
+            and not status.is_paused()
+            and not (
+                need and capability_value(status, need, store=caps_store) is False
+            )
         ]
         results: dict[str, dict[str, Any]] = {}
         for ref in candidates:
@@ -665,7 +691,10 @@ class Pipeline:
         if self.manager is not None:
             return self.manager
         return DecisionManager(
-            self.toolbox, prefs_path=self.prefs_path, stats_path=self.stats_path
+            self.toolbox,
+            prefs_path=self.prefs_path,
+            stats_path=self.stats_path,
+            capabilities_path=self.capabilities_path,
         )
 
     def _finish(self, result: RunResult) -> RunResult:

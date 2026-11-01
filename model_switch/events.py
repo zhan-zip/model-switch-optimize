@@ -45,6 +45,7 @@ class EventType:
     RECHECK_RESULT = "recheck_result"
     RECOVERED = "recovered"
     PROBE_RESULT = "probe_result"
+    CAPABILITY_PROBED = "capability_probed"
     ONBOARDING_CONNECTIVITY = "onboarding_connectivity"
     ONBOARDING_PROFILE = "onboarding_profile"
     ONBOARDING_PROFILE_CONFIRMED = "onboarding_profile_confirmed"

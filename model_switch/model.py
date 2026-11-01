@@ -39,6 +39,7 @@ class ModelStatus:
     last_checked: str = ""
     labels: tuple[str, ...] = ()      # 阶段3 onboarding 打标签用
     paused_until: str | None = None  # 暂停（冷却）截止 ISO 时间；None = 未暂停
+    capabilities_declared: tuple[str, ...] = ()  # 用户在 models.yaml 显式声明的能力（declared 层）
 
     @property
     def key_ready(self) -> bool:
@@ -75,6 +76,7 @@ class ModelStatus:
             "key_env": self.key_env,
             "key_status": mask_env_value(resolve_api_key(self.key_env)),
             "protocol": self.protocol,
+            "capabilities_declared": list(self.capabilities_declared),
             "available": self.available,
             "paused": self.is_paused(),
             "paused_until": self.paused_until,
@@ -101,6 +103,7 @@ class ModelRegistry:
                         key_env=group.key_env,
                         protocol=provider.protocol,
                         options=dict(provider.options),
+                        capabilities_declared=tuple(group.model_caps.get(model, ())),
                     )
 
     @property

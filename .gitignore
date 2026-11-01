@@ -17,7 +17,11 @@ data/tasks/*
 data/sessions/*
 data/pause.json
 data/stats.json
+data/capabilities.json
 !data/**/.gitkeep
 
 # docs/ 与本地敏感资料整体不入库（设计文档 / 测试记录 / 交接文档 / 真实 key 资料）
 docs/
+
+# 软著申请资料（含著作权人证件等个人信息，严禁入库）
+软件著作权申请资料/

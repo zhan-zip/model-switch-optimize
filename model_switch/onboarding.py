@@ -1,6 +1,10 @@
-"""Onboarding（mso init-check）：连通 -> 跑分 -> 画像 -> 确认 -> 标签落盘。
+"""Onboarding（mso init-check）：连通 -> 能力检测 -> 跑分 -> 画像 -> 确认 -> 标签落盘。
 
 - 连通：逐模型测试（全量或 --per-group 每分组代表），事件 onboarding_connectivity
+- 能力检测（能力检测方案C，--skip-capabilities 可跳过）：探测 vision / tool_use /
+  structured_output（declared/probed/mapped 已有来源的项跳过省调用），结果落盘
+  data/capabilities.json，事件 capability_probed；能力表随画像确认一并展示
+  （能力修正走 models.yaml 声明或 mso capabilities 重测，不在确认环节）
 - 跑分：按分组代表模型联网搜索（web_search 保底；失败不阻断，降级无跑分）
 - 画像：决策模型生成"每个模型适合什么任务"标签（仅 LLM 上下文，不落盘）
 - 确认：终端问答循环（满意 / 提修改意见重新生成）；--json 模式跳过交互，
@@ -12,6 +16,11 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from .capability import (
+    DEFAULT_CAPABILITIES_PATH,
+    CAPABILITIES,
+    probe_all,
+)
 from .events import EventType
 from .manager import DecisionManager, DecisionError
 from .model import ModelRegistry, ModelStatus
@@ -45,6 +54,8 @@ def run_onboarding(
     prefs_path: Any = DEFAULT_PREFS_PATH,
     max_rounds: int = 5,
     manager: DecisionManager | None = None,
+    skip_capabilities: bool = False,
+    capabilities_path: Any = DEFAULT_CAPABILITIES_PATH,
 ) -> dict[str, Any]:
     """执行完整 onboarding；返回 {"ok", "status", ...}。"""
 
@@ -60,6 +71,19 @@ def run_onboarding(
         _emit(toolbox, EventType.ONBOARDING_CONNECTIVITY, {"model_ref": ref, "ok": result["ok"]})
     ok_count = sum(1 for value in connectivity.values() if value)
     summary = {"total": len(targets), "ok": ok_count}
+
+    # 1.5 能力检测（方案C；--skip-capabilities 跳过；探测 unknown 项省调用）
+    capabilities: dict[str, dict[str, Any]] = {}
+    if not skip_capabilities:
+        capabilities = probe_all(toolbox, path=capabilities_path)
+    else:
+        capabilities = {
+            str(status.ref): {
+                kind: {"supported": None, "source": "unknown", "tested_at": None}
+                for kind in CAPABILITIES
+            }
+            for status in toolbox.registry.all()
+        }
 
     # 2. 跑分搜索（每分组代表模型；失败不阻断）
     benchmarks: list[str] = []
@@ -88,6 +112,7 @@ def run_onboarding(
             "ok": False,
             "status": "needs_confirmation",
             "profile": labels,
+            "capabilities": capabilities,
             "connectivity": summary,
             "detail": "--json 模式跳过终端确认；画像已随事件流输出，标签未落盘",
         }
@@ -96,8 +121,9 @@ def run_onboarding(
     handler = confirm_handler or _terminal_confirm
     note = ""
     confirmed = False
+    profile_text = _format_profile(labels, capabilities)
     for _ in range(max_rounds):
-        confirmed, note = handler(_format_profile(labels))
+        confirmed, note = handler(profile_text)
         if confirmed:
             _emit(
                 toolbox,
@@ -107,11 +133,13 @@ def run_onboarding(
             break
         labels = _decide_profile(toolbox, manager, benchmarks, previous=labels, note=note)
         _emit(toolbox, EventType.ONBOARDING_PROFILE, {"profile": labels, "user_note": note})
+        profile_text = _format_profile(labels, capabilities)
     if not confirmed:
         return {
             "ok": False,
             "status": "profile_not_confirmed",
             "profile": labels,
+            "capabilities": capabilities,
             "connectivity": summary,
             "detail": f"{max_rounds} 轮确认未通过，标签未保存；可重新运行 init-check",
         }
@@ -133,6 +161,7 @@ def run_onboarding(
         "ok": True,
         "status": "ready",
         "labels": saved,
+        "capabilities": capabilities,
         "prefs_path": str(prefs_path),
         "connectivity": summary,
     }
@@ -190,10 +219,25 @@ def _group_leaders(registry: ModelRegistry) -> list[ModelStatus]:
     return leaders
 
 
-def _format_profile(labels: dict[str, str]) -> str:
+def _format_profile(
+    labels: dict[str, str],
+    capabilities: dict[str, dict[str, Any]] | None = None,
+) -> str:
     lines = ["模型画像（决策模型生成）："]
     for ref, label in sorted(labels.items()):
         lines.append(f"  {ref}  ->  {label}")
+    if capabilities:
+        lines.append("")
+        lines.append("模型能力（探测/声明/映射；? 为未测，可 mso capabilities 补测）：")
+        for ref, caps in sorted(capabilities.items()):
+            parts = []
+            for kind in CAPABILITIES:
+                entry = caps.get(kind) or {}
+                value = entry.get("supported")
+                mark = "?" if value is None else ("✓" if value else "✗")
+                parts.append(f"{kind}={mark}({entry.get('source', '?')})")
+            lines.append(f"  {ref}  {' · '.join(parts)}")
+        lines.append("（能力修正：models.yaml 声明 declared 最高优先，或 mso capabilities --refresh 重测）")
     return "\n".join(lines)
 
 

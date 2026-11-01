@@ -3,11 +3,12 @@
 宿主配置（如 Claude Code 的 mcpServers）：
   {"mcpServers": {"mso": {"command": "mso", "args": ["mcp"]}}}
 
-暴露 17 个 tools：
+暴露 18 个 tools：
   六工具     call_model / list_models / test_connectivity / console_check /
              web_search / fault_history（dispatch 同款能力）
   三决策点   choose_model / plan_recovery / conclude_diagnosis
   健康        model_health（阶段2：健康摘要查询）
+  能力        model_capabilities（能力检测：vision/tool_use/structured_output 查询与探测）
   修复       apply_fix（高危：宿主先向用户确认，经 user_confirmed=true 传入）
   闭环       run（托管宿主直接跑完整任务闭环）
   两阶段     prepare_run / execute_run（阶段3：网页/远程宿主可恢复审批流）
@@ -185,6 +186,24 @@ def build_mcp_server(switcher: ModelSwitcher) -> FastMCP:
     def model_health(model_ref: str = "") -> str:
         """健康摘要查询（阶段2）：省略 model_ref 返回全部模型。"""
         return _dumps(switcher.health(model_ref or None))
+
+    @mcp.tool()
+    def model_capabilities(model_ref: str = "", refresh: bool = False) -> str:
+        """能力查询与探测（能力检测）：vision / tool_use / structured_output。
+
+        省略 model_ref 返回全部模型；返回三层合并结果
+        {ref: {kind: {supported, source, tested_at}}}（supported=None 为未测）。
+        refresh=true 会发起真实探测调用（每项一条极小请求，产生费用），默认只读不探测。
+        """
+        try:
+            result = (
+                switcher.probe_capabilities(model_ref or None, refresh=refresh)
+                if refresh
+                else switcher.get_capabilities(model_ref or None)
+            )
+        except Exception as exc:
+            return _dumps({"ok": False, "error": str(exc)})
+        return _dumps({"ok": True, "capabilities": result})
 
     @mcp.tool()
     def run(task: str, confirm_mode: str = "never") -> str:

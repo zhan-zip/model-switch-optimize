@@ -18,6 +18,7 @@
 - 调用统计与健康状态（成功率、错误分布、延迟分位、Token、健康分级）
 - 两阶段审批：先准备（选型待确认），批准后再执行，支持网页和远程宿主跨进程审批
 - 会话模型偏好：为会话指定首选模型（可选 strict 硬限制），支持网页/Agent 点选切换
+- 模型能力检测：探测/声明/映射三层来源（识图、工具调用、结构化输出），选型时按任务类型硬过滤确认不支持的模型
 - CLI、Python、Agent 和 MCP 多种接入方式
 - 支持用户使用自己的模型地址和 API key
 
@@ -118,7 +119,7 @@ mso run "总结这段文本"
 | Agent 托管模式 | Agent 调用 `run()`，由中间件负责选型和切换 |
 | Agent 自决策模式 | 使用 `dispatch()` 调用六个基础工具 |
 | 网页 / 异步宿主 | `mso prepare --json` + `mso execute <task_id> --json` 两阶段审批；`mso model use/get/auto` 会话偏好 |
-| MCP 宿主 | 启动 `mso mcp`，通过 MCP tools 接入（含 `prepare_run` / `execute_run` / `set_preferred_model` 等共 17 个工具） |
+| MCP 宿主 | 启动 `mso mcp`，通过 MCP tools 接入（含 `prepare_run` / `execute_run` / `set_preferred_model` / `model_capabilities` 等共 18 个工具） |
 
 ## 任务结果
 
@@ -253,6 +254,48 @@ health = switcher.health("my-provider/main/model-a")  # 单个模型
 MCP 宿主可以调用 `model_health` 工具查询同样的结果。
 
 健康状态只用于展示和选型参考，不会自动暂停或禁用模型。
+
+## 模型能力检测
+
+初始化或修改模型列表后，可以检测每个模型的能力（识图 `vision`、工具调用 `tool_use`、结构化输出 `structured_output`），选型时按任务类型自动排除确认不支持的模型（例如识图任务不会分给纯文本模型）。
+
+```bash
+mso capabilities                 # 增量探测：只测未知项（已声明/已探测/已映射的跳过，省调用）
+mso capabilities --model my-provider/main/model-a   # 只测单个模型
+mso capabilities --refresh       # 重测全部非声明项（验证网关是否名实相符）
+mso capabilities --mock          # 无 key 演示
+```
+
+能力来源分三层，优先级从高到低：
+
+```text
+declared（models.yaml 显式声明） > probed（真实探测结果） > mapped（内置模型名映射表）
+```
+
+- 在 `models.yaml` 中声明能力可以跳过对应探测（不想为某模型花探测调用时使用）：
+
+```yaml
+models:
+  - model-a
+  - name: my-private-model
+    capabilities: [vision, tool_use]   # 可选值：vision / tool_use / structured_output
+```
+
+- 探测结果落盘 `data/capabilities.json`；`mso init-check` 会在连通测试后自动执行能力检测（`--skip-capabilities` 可跳过），能力表随画像一并展示供确认。
+- 探测判定保守：调用失败（网络/鉴权/超时）不定罪，返回"未测"；未测能力不参与硬过滤（新模型不被一刀切），选错时由既有故障切换兜底。
+- vision 探测原理：发送一张极小纯色 PNG，问图片颜色，回复与随机选中颜色匹配才判支持（缓解网关剥图后模型瞎猜）。
+
+Python / MCP：
+
+```python
+caps = switcher.get_capabilities()                       # 只读查询（不发起调用）
+caps = switcher.probe_capabilities()                     # 增量探测
+caps = switcher.probe_capabilities(refresh=True)         # 重测
+```
+
+MCP 宿主可调用 `model_capabilities` 工具（`refresh=true` 会发起真实探测调用）。
+
+选型硬过滤规则：决策模型输出任务类型（`task_type`），`vision` / `tool_use` / `structured` 类型任务不能选择"确认不支持"对应能力的模型（未测放行）；故障切换与机械兜底候选同样过滤。
 
 ## 接口要求
 

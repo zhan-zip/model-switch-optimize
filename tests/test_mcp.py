@@ -26,7 +26,7 @@ EXPECTED_TOOLS = {
     "call_model", "list_models", "test_connectivity", "console_check",
     "web_search", "fault_history",
     "choose_model", "plan_recovery", "conclude_diagnosis",
-    "model_health",
+    "model_health", "model_capabilities",
     "apply_fix", "run",
     "prepare_run", "execute_run",
     "set_preferred_model", "get_preferred_model", "clear_preferred_model",

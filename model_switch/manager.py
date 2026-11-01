@@ -27,6 +27,13 @@ from .prefs import (
     match_task_pref,
 )
 from .safety import redact
+from .capability import (
+    DEFAULT_CAPABILITIES_PATH,
+    TASK_TYPE_CAPABILITY,
+    capability_value,
+    load_capabilities,
+    resolve_capabilities,
+)
 from .stats import DEFAULT_STATS_PATH, load_stats, summary
 
 JSON_RE = re.compile(r"\{.*\}", re.S)
@@ -35,8 +42,12 @@ ConfirmHandler = Callable[[str, str, str], bool]  # (operation, reason, evidence
 
 _STATE_TEXT = {True: "可用", False: "不可用", None: "未测"}
 
+# 能力列短名（能力检测方案C）
+_CAP_KIND_TEXT = {"vision": "视觉", "tool_use": "工具", "structured_output": "结构"}
+
 # 5.1 任务类型（阶段3）：决策输出可带可选 task_type；缺失或未知按 general
 TASK_TYPES = ("general", "code", "reasoning", "structured", "language", "vision", "tool_use")
+# 任务类型 -> 所需能力映射见 capability.TASK_TYPE_CAPABILITY（单一来源）
 
 CHOOSE_PROMPT = """\
 你是模型选型决策者。根据以下信息为任务选出最合适的一个模型。
@@ -46,6 +57,16 @@ CHOOSE_PROMPT = """\
 模型清单（完整引用 | 状态 | 标签 | 上次延迟）：
 {table}
 {extra}
+
+任务类型判定要点（输出 task_type 时参考）：
+- 含图片输入或需要看图理解 -> vision
+- 需要函数调用/工具使用（function calling）-> tool_use
+- 要求输出 JSON 等结构化格式 -> structured
+- 编写/调试代码 -> code；数学推导、多步复杂分析 -> reasoning
+- 翻译、润色、摘要等语言文字处理 -> language
+- 难以归类或普通对话 -> general（可省略 task_type）
+
+注意：清单中"能力"列标注 ✗ 的项表示该模型确认不支持对应能力，不要为其分配该类任务。
 
 只输出一个 JSON 对象（不要 markdown 代码块、不要任何其他文字）：
 {{"model": "<清单中的模型完整引用，照抄清单写法>", "task_type": "<可选：任务类型 code|reasoning|structured|language|vision|tool_use，难以归类或不确定则省略>", "reason": "<一句话理由>"}}"""
@@ -101,12 +122,15 @@ class DecisionManager:
         max_retries: int = 1,
         prefs_path: Any = DEFAULT_PREFS_PATH,
         stats_path: Any = DEFAULT_STATS_PATH,
+        capabilities_path: Any = DEFAULT_CAPABILITIES_PATH,
     ):
         self.toolbox = toolbox
         self.confirm_handler = confirm_handler
         self.max_retries = max_retries
         self.prefs_path = prefs_path
         self.stats_path = stats_path
+        self.capabilities_path = capabilities_path
+        self.capabilities_path = capabilities_path
 
     # -- 决策者选定 ---------------------------------------------------
 
@@ -228,6 +252,21 @@ class DecisionManager:
                 return f"model {model} 当前不可用（已知故障或探测中），请选择其他模型"
             if status.is_paused():
                 return f"model {model} 当前暂停中（冷却），请选择其他模型"
+            # 能力硬过滤（能力检测方案C）：任务类型所需能力确认不支持 -> 拒绝（未测放行）
+            task_type = str(data.get("task_type", "")).strip().lower()
+            if task_type not in TASK_TYPES:
+                task_type = "general"
+            need = TASK_TYPE_CAPABILITY.get(task_type)
+            if need:
+                try:
+                    store = load_capabilities(self.capabilities_path)
+                except OSError:
+                    store = {}
+                if capability_value(status, need, store=store) is False:
+                    return (
+                        f"model {model} 确认不支持 {need} 能力（任务类型 {task_type}），"
+                        f"请选择其他模型"
+                    )
             if not str(data.get("reason", "")).strip():
                 return "缺少 reason 字段"
             return ""
@@ -256,20 +295,31 @@ class DecisionManager:
         *,
         detail: str = "",
         use_plan_pref: bool = True,
+        required_capability: str | None = None,
     ) -> Decision:
         """故障切换决策：错误类型 + 可用模型 -> 切换目标 + 是否诊断。
 
         切换偏好命中（同错类上次成功切换的目标仍可用）时程序直接切换
         （decision_model="program"，不调 LLM 省决策成本）；否则走 LLM 决策。
         偏好沉淀由 pipeline 在切换成功后回写（此处只读）。
+        required_capability：任务所需能力（能力检测方案C）——确认不支持的模型
+        不进候选（切到不能胜任任务的模型没有意义；未测放行）。
         """
 
+        try:
+            store = load_capabilities(self.capabilities_path)
+        except OSError:
+            store = {}
         others = [
             status
             for status in self.toolbox.registry.all()
             if str(status.ref) != failed_ref
             and status.available is not False
             and not status.is_paused()
+            and not (
+                required_capability
+                and capability_value(status, required_capability, store=store) is False
+            )
         ]
 
         # 切换偏好命中：程序直接决策（目标必须仍在可用候选集内）
@@ -307,8 +357,16 @@ class DecisionManager:
                 return "缺少 switch_to 字段"
             if switch_to == failed_ref:
                 return "switch_to 不能是刚失败的模型"
-            if self.toolbox.registry.find(switch_to) is None:
+            target_status = self.toolbox.registry.find(switch_to)
+            if target_status is None:
                 return f"switch_to 必须是清单内的完整引用：{switch_to}"
+            if required_capability and capability_value(
+                target_status, required_capability, store=store
+            ) is False:
+                return (
+                    f"switch_to {switch_to} 确认不支持 {required_capability} 能力，"
+                    f"请选择其他模型"
+                )
             if not isinstance(data.get("diagnose"), bool):
                 return "diagnose 字段必须是 true/false"
             pause_seconds = data.get("pause_seconds")
@@ -364,16 +422,20 @@ class DecisionManager:
     # -- 上下文组装 ---------------------------------------------------
 
     def _model_table(self, prefs: dict[str, dict[str, str]]) -> str:
-        """选型模型表：状态/标签/延迟 + 经验分 + 健康摘要（样本不足不显示，阶段2 注入）。"""
+        """选型模型表：状态/标签/延迟 + 经验分 + 健康摘要 + 能力列（样本不足不显示，阶段2 注入）。"""
 
         labels = prefs.get("model_labels", {})
         try:
             stats = load_stats(self.stats_path)
         except OSError:
             stats = {}
+        try:
+            caps_store = load_capabilities(self.capabilities_path)
+        except OSError:
+            caps_store = {}
         lines: list[str] = []
         for status in self.toolbox.registry.all():
-            line = self._status_line(status, labels)
+            line = self._status_line(status, labels, caps_store=caps_store)
             exp = summary(str(status.ref), stats=stats)
             if exp is not None:
                 line += f" | 经验: 近{exp['n']}次 成功率{exp['rate']}% 均耗时{exp['avg_latency_ms']}ms"
@@ -397,14 +459,45 @@ class DecisionManager:
         hs = health_status(ref, stats=stats)
         return f"status={hs} rate={h['rate']}% fail={h['fail_n']}"
 
-    def _status_line(self, status: Any, labels: dict[str, str]) -> str:
+    def _status_line(
+        self,
+        status: Any,
+        labels: dict[str, str],
+        caps_store: dict[str, dict[str, Any]] | None = None,
+    ) -> str:
         label = labels.get(str(status.ref), "-")
         latency = f"{status.last_latency_ms}ms" if status.last_latency_ms else "-"
         paused = "，暂停中（冷却）" if status.is_paused() else ""
+        caps = self._caps_hint(status, caps_store)
+        caps_part = f" | 能力: {caps}" if caps else ""
         return (
             f"- {status.ref} | {_STATE_TEXT[status.available]}{paused} | "
-            f"标签: {label} | 上次延迟: {latency}"
+            f"标签: {label} | 上次延迟: {latency}{caps_part}"
         )
+
+    def _caps_hint(
+        self,
+        status: Any,
+        caps_store: dict[str, dict[str, Any]] | None = None,
+    ) -> str:
+        """能力列短文案（能力检测方案C）：视觉✓ 工具✗ 结构?；全未知返回空串不显示。
+
+        只显示"确认支持/确认不支持"的项——未知项提示 ✗ 会误导决策模型，
+        提示 ? 增加噪音；未测能力靠 validator 兜底（放行+失败自愈切换）。
+        """
+
+        try:
+            caps = resolve_capabilities(status, store=caps_store or {})
+        except Exception:
+            return ""
+        marks: list[str] = []
+        for kind, text in _CAP_KIND_TEXT.items():
+            value = (caps.get(kind) or {}).get("supported")
+            if value is True:
+                marks.append(f"{text}✓")
+            elif value is False:
+                marks.append(f"{text}✗")
+        return " ".join(marks)
 
     # -- 事件 ---------------------------------------------------------
 

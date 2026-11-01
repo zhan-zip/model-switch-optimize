@@ -1,11 +1,11 @@
 """CLI 入口：mso <command>。
 
-已实现（十八命令全齐）：
+已实现（十九命令全齐）：
 init（生成配置模板）· validate（校验配置）· tools（模型清单与状态）
 · init-check（onboarding）· run（完整闭环）· prepare（两阶段：选型不执行）
 · execute（两阶段：执行已批准任务）· model（会话模型偏好 use/get/auto）
-· diagnose（手动诊断）· history（故障历史）· probe（周期探测）
-· auth（控制台账号）· pause（暂停模型）· resume（恢复模型）
+· capabilities（能力探测与展示）· diagnose（手动诊断）· history（故障历史）
+· probe（周期探测）· auth（控制台账号）· pause（暂停模型）· resume（恢复模型）
 · stats（统计信息）· mcp（MCP server）。
 """
 from __future__ import annotations
@@ -67,11 +67,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_tools.add_argument("--mock", action="store_true", help="使用 mock（无真实 key 也能演示）")
     p_tools.add_argument("--json", action="store_true", help="输出 JSON 结果")
 
-    p_ic = sub.add_parser("init-check", help="初始化 onboarding（连通+跑分+画像+标签）")
+    p_ic = sub.add_parser("init-check", help="初始化 onboarding（连通+能力检测+跑分+画像+标签）")
     p_ic.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
     p_ic.add_argument("--per-group", action="store_true", help="连通测试只测每分组代表模型（默认全量）")
+    p_ic.add_argument("--skip-capabilities", action="store_true", help="跳过能力检测（vision/工具调用/结构化输出探测）")
     p_ic.add_argument("--mock", action="store_true", help="使用 mock（无真实 key 也能演示）")
     p_ic.add_argument("--json", action="store_true", help="输出 JSON 事件流（跳过终端确认，标签不落盘）")
+
+    p_caps = sub.add_parser("capabilities", help="模型能力探测与展示（vision/工具调用/结构化输出；三层来源合并）")
+    p_caps.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径")
+    p_caps.add_argument("--model", default=None, help="只探测/展示指定模型（服务商/分组/模型名）")
+    p_caps.add_argument("--refresh", action="store_true", help="重测全部非声明项（默认增量：只测未知项；用于验证网关名实）")
+    p_caps.add_argument("--mock", action="store_true", help="使用 mock（无真实 key 也能演示）")
+    p_caps.add_argument("--json", action="store_true", help="输出 JSON 结果")
 
     p_run = sub.add_parser("run", help="完整闭环处理任务（选型->调用->故障切换->机械兜底）")
     p_run.add_argument("task", help="任务文本")
@@ -863,6 +871,79 @@ def _health_label(ref: str, stats) -> str:
     return health_status(ref, stats=stats)
 
 
+def cmd_capabilities(args: argparse.Namespace) -> int:
+    """能力探测与展示（能力检测方案C）：vision / tool_use / structured_output。"""
+    try:
+        config = load_config(args.config)
+    except ConfigError as exc:
+        _print_line(args.json, {"ok": False, "errors": [f"加载失败：{exc}"]})
+        return 1
+
+    registry = ModelRegistry(config)
+    stream = EventStream()
+    if args.mock:
+        from .capability import MOCK_CAPABILITY_OUTCOMES
+
+        # mock 演示：预置一个"无映射命中"的模型 vision=False，展示选型能力硬过滤素材
+        # （finally 清理：MOCK_CAPABILITY_OUTCOMES 是模块级共享状态，不污染后续调用）
+        from .rules import match_capability_rules
+
+        target = next(
+            (s for s in registry.all() if not match_capability_rules(s.ref.model)),
+            registry.all()[0],
+        )
+        MOCK_CAPABILITY_OUTCOMES.setdefault(
+            target.ref.model, {"vision": False, "tool_use": True, "structured_output": None}
+        )
+        try:
+            toolbox = Toolbox(
+                config, registry, stream,
+                model_client=MockModelClient(),
+                console=MockConsole(),
+                web_search_impl=MockWebSearch().search,
+                mock=True,
+            )
+            return _run_capabilities(args, toolbox, stream, mock=True)
+        finally:
+            MOCK_CAPABILITY_OUTCOMES.pop(target.ref.model, None)
+
+    toolbox = Toolbox(config, registry, stream, web_search_impl=default_web_search)
+    return _run_capabilities(args, toolbox, stream, mock=False)
+
+
+def _run_capabilities(args: argparse.Namespace, toolbox: Toolbox, stream: EventStream, *, mock: bool) -> int:
+    from .capability import DEFAULT_CAPABILITIES_PATH, probe_all
+
+    if mock:
+        import tempfile
+
+        caps_path = Path(tempfile.mkdtemp(prefix="mso-mock-caps-")) / "capabilities.json"
+    else:
+        caps_path = DEFAULT_CAPABILITIES_PATH
+
+    results = probe_all(
+        toolbox, args.model, path=caps_path, incremental=not args.refresh
+    )
+    if args.model and args.model not in results:
+        _print_line(args.json, {"ok": False, "errors": [f"未知模型：{args.model}"]})
+        return 1
+
+    if args.json:
+        print(json.dumps({"ok": True, "capabilities": results}, ensure_ascii=False))
+        return 0
+
+    print("模型能力（✓ 支持 · ✗ 确认不支持 · ? 未测；来源 declared/probed/mapped）：")
+    for ref, caps in results.items():
+        parts = []
+        for kind, entry in caps.items():
+            value = entry.get("supported")
+            mark = "?" if value is None else ("✓" if value else "✗")
+            parts.append(f"{kind}={mark}（{entry.get('source')}）")
+        print(f"  {ref}  {' · '.join(parts)}")
+    print(f"（探测结果落盘 {caps_path}；选型时任务类型所需能力 ✗ 的模型将被拒绝）")
+    return 0
+
+
 def cmd_init_check(args: argparse.Namespace) -> int:
     try:
         config = load_config(args.config)
@@ -873,6 +954,9 @@ def cmd_init_check(args: argparse.Namespace) -> int:
     registry = ModelRegistry(config)
     stream = EventStream(persist_dir=Path("data/events"))
     if args.mock:
+        import tempfile as _tf
+
+        caps_path = Path(_tf.mkdtemp(prefix="mso-mock-caps-")) / "capabilities.json"
         fallback_model = config.fallback_ref().model  # MockModelClient 按模型名匹配
         profile_json = json.dumps(
             {"labels": {str(status.ref): "mock标签、演示用" for status in registry.all()}},
@@ -886,9 +970,16 @@ def cmd_init_check(args: argparse.Namespace) -> int:
             mock=True,
         )
     else:
+        caps_path = None  # 真实模式：能力表写默认 data/capabilities.json
         toolbox = Toolbox(config, registry, stream, web_search_impl=default_web_search)
 
-    result = run_onboarding(toolbox, per_group=args.per_group, json_mode=args.json)
+    result = run_onboarding(
+        toolbox,
+        per_group=args.per_group,
+        json_mode=args.json,
+        skip_capabilities=args.skip_capabilities,
+        **({} if caps_path is None else {"capabilities_path": caps_path}),
+    )
 
     if args.json:
         print(stream.to_json())
@@ -897,6 +988,15 @@ def cmd_init_check(args: argparse.Namespace) -> int:
     connectivity = result.get("connectivity", {})
     print(f"连通测试：{connectivity.get('ok', 0)}/{connectivity.get('total', 0)} 通过"
           + ("（每分组代表）" if args.per_group else ""))
+    if not args.skip_capabilities:
+        caps = result.get("capabilities", {})
+        known = sum(
+            1
+            for model_caps in caps.values()
+            for entry in model_caps.values()
+            if entry.get("supported") is not None
+        )
+        print(f"能力检测：{known} 项已定论（vision/工具调用/结构化输出；? 未测项可 mso capabilities 补测）")
     if result.get("status") == "ready":
         labels = result.get("labels", {})
         print(f"标签已保存：{result.get('prefs_path')}（{len(labels)} 个模型）")
@@ -948,6 +1048,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_tools(args)
     if args.command == "init-check":
         return cmd_init_check(args)
+    if args.command == "capabilities":
+        return cmd_capabilities(args)
     if args.command == "run":
         return cmd_run(args)
     if args.command == "prepare":

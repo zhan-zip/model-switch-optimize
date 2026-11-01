@@ -19,6 +19,11 @@ from typing import Any, Callable
 
 from .client import call_openai_compatible
 from .config import DEFAULT_CONFIG_PATH, load_config
+from .capability import (
+    DEFAULT_CAPABILITIES_PATH,
+    probe_all,
+    resolve_capabilities,
+)
 from .diagnose import run_diagnose
 from .events import EventStream, EventType
 from .manager import DecisionManager, DecisionError
@@ -52,6 +57,7 @@ class ModelSwitcher:
         persist_events: bool = True,
         tasks_dir: Path | str = DEFAULT_TASKS_DIR,
         sessions_dir: Path | str = DEFAULT_SESSIONS_DIR,
+        capabilities_path: Path | str | None = None,
     ):
         self.config = load_config(config_path)
         self.registry = ModelRegistry(self.config)
@@ -67,13 +73,24 @@ class ModelSwitcher:
             console = MockConsole()
         if web_search_impl is None:
             web_search_impl = MockWebSearch().search if mock else default_web_search
-        # mock 演示：切换偏好/暂停表/统计只写临时文件，不污染真实运行态
+        # mock 演示：切换偏好/暂停表/统计/能力表只写临时文件，不污染真实运行态
         if mock:
             import tempfile
 
             stats_path = Path(tempfile.mkdtemp(prefix="mso-mock-stats-")) / "stats.json"
         else:
             stats_path = DEFAULT_STATS_PATH
+        # 能力表影响选型决策（属运行态状态）：mock 默认临时隔离；
+        # 显式传入 capabilities_path 时尊重调用方（测试注入 tmp）
+        if capabilities_path is not None:
+            caps_path = Path(capabilities_path)
+        elif mock:
+            import tempfile
+
+            caps_path = Path(tempfile.mkdtemp(prefix="mso-mock-caps-")) / "capabilities.json"
+        else:
+            caps_path = DEFAULT_CAPABILITIES_PATH
+        self.capabilities_path = caps_path
         self.toolbox = Toolbox(
             self.config, self.registry, self.stream,
             model_client=model_client or call_openai_compatible,
@@ -83,7 +100,9 @@ class ModelSwitcher:
             stats_path=stats_path,
             mock=mock,
         )
-        self.manager = DecisionManager(self.toolbox, confirm_handler=confirm_handler)
+        self.manager = DecisionManager(
+            self.toolbox, confirm_handler=confirm_handler, capabilities_path=caps_path
+        )
         if mock:
             import tempfile
 
@@ -108,6 +127,7 @@ class ModelSwitcher:
             stats_path=stats_path,
             tasks_dir=tasks_dir,
             sessions_dir=sessions_dir,
+            capabilities_path=caps_path,
         )
 
     # -- 闭环 ---------------------------------------------------------
@@ -227,6 +247,49 @@ class ModelSwitcher:
                 "paused": status is not None and status.is_paused(),
             }
         return result
+
+    # -- 能力检测（方案C）------------------------------------------------
+
+    def get_capabilities(self, model_ref: str | None = None) -> dict[str, Any]:
+        """能力查询（三层合并结果）：model_ref 省略返回全部模型。
+
+        返回 {model_ref: {vision/tool_use/structured_output: {supported, source, tested_at}}}；
+        supported=None 表示未测（选型放行）。不发起任何真实调用。
+        """
+
+        from .capability import load_capability_rules
+
+        store = self._load_caps_store()
+        rules = load_capability_rules()
+        refs = [model_ref] if model_ref else [str(s.ref) for s in self.toolbox.registry.all()]
+        result: dict[str, Any] = {}
+        for ref in refs:
+            status = self.toolbox.registry.find(ref)
+            if status is None:
+                continue
+            result[ref] = resolve_capabilities(status, store=store, rules=rules)
+        return result
+
+    def probe_capabilities(
+        self, model_ref: str | None = None, *, refresh: bool = False
+    ) -> dict[str, Any]:
+        """能力探测：incremental（默认）只测未知项；refresh=True 重测全部非声明项。
+
+        会发起真实模型调用（每项一条极小请求，mock 模式除外）；结果落盘
+        capabilities_path 并返回全部模型的三层合并结果。
+        """
+
+        return probe_all(
+            self.toolbox, model_ref, path=self.capabilities_path, incremental=not refresh
+        )
+
+    def _load_caps_store(self) -> dict[str, Any]:
+        from .capability import load_capabilities
+
+        try:
+            return load_capabilities(self.capabilities_path)
+        except OSError:
+            return {}
 
     # -- 会话模型偏好（阶段4）--------------------------------------------
 
