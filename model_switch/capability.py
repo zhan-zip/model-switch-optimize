@@ -50,6 +50,9 @@ SOURCE_PROBED = "probed"
 SOURCE_MAPPED = "mapped"
 SOURCE_UNKNOWN = "unknown"
 
+# 能力短名（选型表 / CLI 展示共用）
+CAP_KIND_TEXT = {"vision": "视觉", "tool_use": "工具", "structured_output": "结构"}
+
 # -- vision 探测素材 -------------------------------------------------------
 
 # 调色板：颜色名 -> (RGB, 中英文匹配词)
@@ -220,6 +223,25 @@ def capability_value(
     entry = caps.get(kind) or {}
     value = entry.get("supported")
     return value if isinstance(value, bool) else None
+
+
+def format_capabilities(caps: dict[str, dict[str, Any]], *, only_known: bool = True) -> str:
+    """能力短文案（选型表 / CLI 展示）：`视觉✓ 工具✗`。
+
+    only_known=True 时只显示已定论项（未测不显示，防误导决策模型）；
+    全无已定论项返回空串。
+    """
+
+    marks: list[str] = []
+    for kind, text in CAP_KIND_TEXT.items():
+        value = (caps.get(kind) or {}).get("supported")
+        if value is True:
+            marks.append(f"{text}✓")
+        elif value is False:
+            marks.append(f"{text}✗")
+        elif not only_known:
+            marks.append(f"{text}?")
+    return " ".join(marks)
 
 
 # -- 探测 -------------------------------------------------------------------

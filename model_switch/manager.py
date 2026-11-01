@@ -31,6 +31,7 @@ from .capability import (
     DEFAULT_CAPABILITIES_PATH,
     TASK_TYPE_CAPABILITY,
     capability_value,
+    format_capabilities,
     load_capabilities,
     resolve_capabilities,
 )
@@ -41,9 +42,6 @@ JSON_RE = re.compile(r"\{.*\}", re.S)
 ConfirmHandler = Callable[[str, str, str], bool]  # (operation, reason, evidence) -> granted
 
 _STATE_TEXT = {True: "可用", False: "不可用", None: "未测"}
-
-# 能力列短名（能力检测方案C）
-_CAP_KIND_TEXT = {"vision": "视觉", "tool_use": "工具", "structured_output": "结构"}
 
 # 5.1 任务类型（阶段3）：决策输出可带可选 task_type；缺失或未知按 general
 TASK_TYPES = ("general", "code", "reasoning", "structured", "language", "vision", "tool_use")
@@ -480,24 +478,17 @@ class DecisionManager:
         status: Any,
         caps_store: dict[str, dict[str, Any]] | None = None,
     ) -> str:
-        """能力列短文案（能力检测方案C）：视觉✓ 工具✗ 结构?；全未知返回空串不显示。
+        """能力列短文案（能力检测方案C）：视觉✓ 工具✗；全未知返回空串不显示。
 
-        只显示"确认支持/确认不支持"的项——未知项提示 ✗ 会误导决策模型，
-        提示 ? 增加噪音；未测能力靠 validator 兜底（放行+失败自愈切换）。
+        只显示"确认支持/确认不支持"的项——未测项提示会增加噪音；
+        未测能力靠 validator 兜底（放行+失败自愈切换）。
         """
 
         try:
             caps = resolve_capabilities(status, store=caps_store or {})
         except Exception:
             return ""
-        marks: list[str] = []
-        for kind, text in _CAP_KIND_TEXT.items():
-            value = (caps.get(kind) or {}).get("supported")
-            if value is True:
-                marks.append(f"{text}✓")
-            elif value is False:
-                marks.append(f"{text}✗")
-        return " ".join(marks)
+        return format_capabilities(caps)
 
     # -- 事件 ---------------------------------------------------------
 

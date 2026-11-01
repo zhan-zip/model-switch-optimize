@@ -301,6 +301,12 @@ def cmd_tools(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps({"ok": True, "models": models}, ensure_ascii=False))
         return 0
+    from .capability import format_capabilities, load_capabilities, resolve_capabilities
+
+    try:
+        caps_store = load_capabilities()
+    except OSError:
+        caps_store = {}
     print(f"模型清单（{len(models)} 个）：")
     for i, m in enumerate(models, 1):
         state = {True: "可用", False: "不可用", None: "未测"}[m["available"]]
@@ -308,6 +314,12 @@ def cmd_tools(args: argparse.Namespace) -> int:
             state += "，暂停中（冷却）"
         key_state = "key 已设置" if "****" in str(m["key_status"]) else "key 未设置"
         print(f"  {i}. {m['model_ref']}  [{key_state}]  状态: {state}")
+        status = registry.find(m["model_ref"])
+        caps_text = ""
+        if status is not None:
+            caps_text = format_capabilities(resolve_capabilities(status, store=caps_store))
+        if caps_text:
+            print(f"     └ 能力: {caps_text}（mso capabilities 查看/补测）")
         if m["last_error_class"]:
             print(f"     └ 上次错误: [{m['last_error_class']}] {m['last_error_detail']}")
     return 0

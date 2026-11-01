@@ -281,7 +281,7 @@ models:
     capabilities: [vision, tool_use]   # 可选值：vision / tool_use / structured_output
 ```
 
-- 探测结果落盘 `data/capabilities.json`；`mso init-check` 会在连通测试后自动执行能力检测（`--skip-capabilities` 可跳过），能力表随画像一并展示供确认。
+- 探测结果落盘 `data/capabilities.json`；`mso init-check` 会在连通测试后自动执行能力检测（`--skip-capabilities` 可跳过），能力表随画像一并展示供确认；`mso tools` 清单也会显示已定论的能力（`视觉✓ 工具✗`）。
 - 探测判定保守：调用失败（网络/鉴权/超时）不定罪，返回"未测"；未测能力不参与硬过滤（新模型不被一刀切），选错时由既有故障切换兜底。
 - vision 探测原理：发送一张极小纯色 PNG，问图片颜色，回复与随机选中颜色匹配才判支持（缓解网关剥图后模型瞎猜）。
 

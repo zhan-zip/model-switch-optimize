@@ -593,6 +593,25 @@ def test_onboarding_probes_capabilities(tmp_path):
 # -- CLI capabilities 命令 ------------------------------------------------------
 
 
+def test_cli_tools_shows_capability_line(tmp_path, capsys, monkeypatch):
+    """mso tools 人读清单展示能力列（只显示已定论项）。"""
+    from model_switch import cli
+
+    yaml_path = tmp_path / "models.yaml"
+    yaml_path.write_text(VALID_YAML, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    save_capabilities(
+        {"a/g1/m1": {"vision": {"supported": False, "source": "probed", "tested_at": "t"}}},
+        tmp_path / "data" / "capabilities.json",
+    )
+    code = cli.main(["tools", "--config", str(yaml_path)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "能力: 视觉✗" in out  # 已定论模型显示能力列
+    assert out.count("└ 能力:") == 1  # 未测模型不显示能力行（防噪音）
+
+
 def test_cli_capabilities_mock(tmp_path, capsys, monkeypatch):
     from model_switch import cli
 
